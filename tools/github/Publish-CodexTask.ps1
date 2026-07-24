@@ -75,23 +75,76 @@ if ($LASTEXITCODE -ne 0) {
     throw "Normal branch push failed."
 }
 
-$prUrl = (& gh pr create `
-    --repo ((& gh repo view --json nameWithOwner --jq .nameWithOwner).Trim()) `
+$remoteUrl = (& git -C $repositoryRoot remote get-url origin).Trim().TrimEnd("/")
+if ($remoteUrl.EndsWith(".git", [StringComparison]::OrdinalIgnoreCase)) {
+    $remoteUrl = $remoteUrl.Substring(0, $remoteUrl.Length - 4)
+}
+if ($remoteUrl -notmatch "github\.com[/:](?<owner>[^/]+)/(?<repository>[^/]+)$") {
+    throw "Unable to derive the GitHub repository from origin."
+}
+$owner = $Matches.owner
+$repositoryName = "$owner/$($Matches.repository)"
+
+$createOutput = @(& gh pr create `
+    --repo $repositoryName `
     --draft `
     --base $BaseBranch `
     --head $branch `
     --title $PRTitle `
-    --body $PRBody).Trim()
-if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($prUrl)) {
-    throw "Draft pull request creation failed."
+    --body $PRBody)
+$createExitCode = $LASTEXITCODE
+$prUrl = (
+    $createOutput |
+        Where-Object { $_ -match "^https://github\.com/.+/pull/\d+$" } |
+        Select-Object -Last 1
+)
+
+if ($createExitCode -ne 0 -or [string]::IsNullOrWhiteSpace($prUrl)) {
+    for ($attempt = 1; $attempt -le 3; $attempt++) {
+        if ($attempt -gt 1) {
+            Start-Sleep -Seconds 2
+        }
+        $pullsJson = & gh api --method GET "repos/$repositoryName/pulls" `
+            -f state=open `
+            -f "head=${owner}:$branch" `
+            -f "base=$BaseBranch"
+        if ($LASTEXITCODE -eq 0) {
+            $pulls = @($pullsJson | ConvertFrom-Json)
+            $matching = @($pulls | Where-Object {
+                $_.head.ref -eq $branch -and $_.base.ref -eq $BaseBranch
+            })
+            if ($matching.Count -eq 1) {
+                $prUrl = $matching[0].html_url
+                break
+            }
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace($prUrl)) {
+        throw "Draft pull request creation failed and no matching open PR was found."
+    }
 }
 
-$pr = & gh pr view $prUrl --json url,number,state,isDraft,autoMergeRequest,headRefName,baseRefName |
-    ConvertFrom-Json
-if ($LASTEXITCODE -ne 0) {
-    throw "Unable to verify the created pull request."
+$prNumberText = $prUrl.TrimEnd("/").Split("/")[-1]
+$prNumber = 0
+if (-not [int]::TryParse($prNumberText, [ref] $prNumber)) {
+    throw "Unable to parse the pull request number from its URL."
 }
-if (-not $pr.isDraft -or $null -ne $pr.autoMergeRequest) {
+
+$pr = $null
+for ($attempt = 1; $attempt -le 3; $attempt++) {
+    if ($attempt -gt 1) {
+        Start-Sleep -Seconds 2
+    }
+    $prJson = & gh api "repos/$repositoryName/pulls/$prNumber"
+    if ($LASTEXITCODE -eq 0) {
+        $pr = $prJson | ConvertFrom-Json
+        break
+    }
+}
+if ($null -eq $pr) {
+    throw "Unable to verify the created pull request through the REST API."
+}
+if (-not $pr.draft -or $null -ne $pr.auto_merge) {
     throw "The pull request is not a Draft or auto-merge is unexpectedly enabled."
 }
 
@@ -99,8 +152,8 @@ $result = [ordered]@{
     branch = $branch
     commit = $commit
     pr_number = $pr.number
-    pr_url = $pr.url
-    draft = $pr.isDraft
+    pr_url = $pr.html_url
+    draft = $pr.draft
     auto_merge = $false
     staged_files = $staged.Count
 }

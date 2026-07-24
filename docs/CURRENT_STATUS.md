@@ -41,6 +41,16 @@
 - 后续开发只允许使用 `task/`、`fix/` 或 `chore/` 分支，并通过 Draft PR、自动检查和独立审核报告流转；不会自动合并。
 - TASK-002 技术阶段已经通过，但人工准确率审核尚未完成，TASK-003 尚未开始。
 
+## TASK-GITHUB-002-FIX
+
+- 已从 TASK-002 验收快照建立全新的脱敏公开 Git 历史；原私有仓库和旧 Git 对象保持本地归档状态，没有重写或上传。
+- 公开基线已通过文件、个人信息、凭据、媒体、模型、二进制和大文件扫描。
+- GitHub Actions 提供 `repository-safety`、`lightweight-tests` 和 `task-report-gate` 三项检查。
+- `master` ruleset 要求 PR、三项检查和会话解决，并禁止删除和非快进更新；仓库 auto-merge 关闭。
+- 自动提交、普通 push、Draft PR 和 handoff 冒烟验证已经通过；冒烟 PR 已关闭且未合并。
+- 本结果通过单独 Draft PR 交付，等待独立审核和用户手动决定是否合并。
+- 未执行人工准确率审核，未执行 TASK-003。
+
 ## TASK-000-FIX 完成内容
 
 - 三个顶层 Schema 版本冻结为 `1.0`，启用严格类型、有限数和未知字段拒绝；
