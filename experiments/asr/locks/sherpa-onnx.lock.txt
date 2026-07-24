@@ -1,0 +1,5 @@
+numpy==2.3.5
+pip==25.0.1
+psutil==7.0.0
+sherpa-onnx-core==1.13.4
+sherpa_onnx==1.13.4

@@ -1,0 +1,24 @@
+{
+  "schema_version": "1.0",
+  "paths": {
+    "projects": "<PROJECT_ROOT>\\项目",
+    "models": "<PROJECT_ROOT>\\模型",
+    "settings": "<PROJECT_ROOT>\\设置",
+    "logs": "<PROJECT_ROOT>\\runtime\\logs",
+    "cache": "<PROJECT_ROOT>\\runtime\\cache",
+    "temp": "<PROJECT_ROOT>\\runtime\\temp"
+  },
+  "media": {
+    "ffmpeg_path": "<PROJECT_ROOT>\\tools\\ffmpeg\\bin\\ffmpeg.exe",
+    "ffprobe_path": "<PROJECT_ROOT>\\tools\\ffmpeg\\bin\\ffprobe.exe",
+    "temp_dir": "<PROJECT_ROOT>\\runtime\\temp\\media",
+    "precise_trim_encoder": "libx264",
+    "av_start_tolerance_ms": 100,
+    "stream_duration_tolerance_ms": 150,
+    "target_duration_tolerance_ms": 150,
+    "probe_amf_encoders": true
+  },
+  "network": {
+    "allow_paid_api": false
+  }
+}

@@ -1,0 +1,37 @@
+name: Bug report
+description: Report a reproducible defect without private data
+title: "[Bug] "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: Do not upload real media, credentials, private paths, machine dumps, models, or user data.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: Describe the defect and expected behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Sanitized reproduction
+      description: Provide minimal source-only steps using synthetic data.
+    validations:
+      required: true
+  - type: input
+    id: revision
+    attributes:
+      label: Revision
+      description: Commit or tag where the issue occurs.
+    validations:
+      required: true
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Data safety
+      options:
+        - label: I removed credentials, personal paths, real media, model files, logs, and user data.
+          required: true
