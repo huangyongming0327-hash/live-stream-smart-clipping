@@ -51,6 +51,15 @@
 - 本结果通过单独 Draft PR 交付，等待独立审核和用户手动决定是否合并。
 - 未执行人工准确率审核，未执行 TASK-003。
 
+## TASK-GITHUB-002-FIX2
+
+- TASK-GITHUB-002-FIX-R 独立审核为 65/100、不通过，并确认 CI 假绿和单审核报告发布器崩溃两项阻断；PR #2 继续保持 Draft，暂不合并。
+- FIX2 已在公开工作副本完成本地实现：统一 source-only 测试入口会逐项传播原生命令退出码，GitHub Windows 中文子进程测试改为确定性 UTF-8 字节输出，workflow 已增加 concurrency cancellation。
+- Start、Publish、Audit 和 Handoff 脚本现由 `.github/liveclip-workflow.json` 绑定规范仓库；Start 同步最新 `master`，Publish 提交前运行测试，Audit 支持单一报告，Handoff 输出审核分数、head SHA、报告和合并资格。
+- Windows PowerShell 5.1 临时 Git 仓库行为矩阵为 23 passed、0 failed；本地 source-only 为基础 110 passed/1 deselected、ASR 35 passed/2 deselected、均为 0 failed，`pip check` 通过。
+- 当前等待 PR #2 最新 Actions 的完整日志验证和 TASK-GITHUB-002-FIX2-R 独立审核；不得写成已经通过在线审核或已经可合并。
+- 未执行人工准确率审核，未执行 TASK-003。
+
 ## TASK-000-FIX 完成内容
 
 - 三个顶层 Schema 版本冻结为 `1.0`，启用严格类型、有限数和未知字段拒绝；
@@ -93,7 +102,7 @@
 
 ## 建议下一个任务
 
-- 下一步仅建议另开单独任务执行人工准确率审核；不在本任务内自动执行人工审核或 TASK-003。
+- 下一步仅建议 TASK-GITHUB-002-FIX2-R 独立审核；本阶段不执行人工准确率审核或 TASK-003。
 
 ## 约束核验
 

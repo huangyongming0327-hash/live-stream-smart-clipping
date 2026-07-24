@@ -1,0 +1,10 @@
+{
+  "canonical_repository": "huangyongming0327-hash/live-stream-smart-clipping",
+  "base_branch": "master",
+  "audit_score_threshold": 85,
+  "required_checks": [
+    "repository-safety",
+    "lightweight-tests",
+    "task-report-gate"
+  ]
+}

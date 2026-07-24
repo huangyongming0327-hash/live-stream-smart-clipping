@@ -141,3 +141,20 @@
 - 恢复决策：比较基准始终是上一个已接受有效段；排除一个异常条目后，后续条目仍独立判断，不因单个异常级联丢弃其后的正常段。
 - 空结果决策：正常无文本、无 segment 的静音结果不是时间轴不可用，不产生 warning/error，也不标记 `timeline_status=unavailable`。
 - 原因：来源非单调若交给公共排序，会丢失异常证据并把错误时间轴静默发布为正常字幕；在适配器边界拒绝可保持 raw 可追溯性，同时不改变正常模型时间。
+
+## D-0021｜source-only 测试统一入口与原生命令失败传播
+
+- 状态：已接受（TASK-GITHUB-002-FIX2 本地验证通过，待在线 Actions 和 FIX2-R 独立审核）。
+- 决策：GitHub `lightweight-tests` 和本地任务发布共同调用 `tools/github/Invoke-SourceOnlyTests.ps1`。基础测试、ASR 实验测试和 `pip check` 后必须立即读取 `$LASTEXITCODE`，任一非零即停止，后续成功命令不得覆盖失败。
+- 编码决策：脚本仅在自身进程范围为 Python 设置 UTF-8 环境并在结束时恢复。两个进程执行器回归测试由子 Python 的 `stdout.buffer`/`stderr.buffer` 明确写 UTF-8 字节，继续严格断言完整中文、退出码 7 和无替换字符。
+- workflow 决策：依赖安装的每个 pip 命令也显式传播失败；同 PR/ref 的新 run 会取消旧 run。三个 required job 名称保持不变。
+- 原因：Windows PowerShell 5.1 不会自动把 run block 中较早原生命令的非零结果保持到步骤结束；控制台文本编码也不是 `run_process()` 字节捕获/解码契约的一部分。
+
+## D-0022｜Codex GitHub 自动化绑定与人工合并门禁
+
+- 状态：已接受（TASK-GITHUB-002-FIX2 本地验证通过，待在线 Actions 和 FIX2-R 独立审核）。
+- 仓库决策：`.github/liveclip-workflow.json` 是 canonical repository、base branch、required checks 和 85/100 审核门槛的单一策略来源。Start、Publish、Audit 和 Handoff 都拒绝缺失、歧义、非 GitHub 或其他 owner/repository 的 origin。
+- 启动决策：Start 只从干净的 base branch 运行，先 `pull --ff-only` 并验证本地/远端 SHA 完全一致；落后只允许快进，领先或分叉停止。
+- 发布决策：任务发布必须指明本次 RESULT 报告并在 stage/commit 前通过统一测试；审核发布只接受一个或多个 AUDIT 报告；push 始终普通且有界，不 force、不 merge、不启用 auto-merge、不重复创建同 head/base PR。
+- 交接决策：Handoff 同时报告 head SHA、required checks、RESULT/AUDIT、审核分数/结论、阻断问题、`eligible_to_mark_ready` 和 `eligible_for_manual_merge`。只有 Ready PR 才可能具备人工合并资格，最终动作始终由用户决定。
+- 原因：本项目的本地 Codex 发布器服务于唯一公开仓库；把仓库身份、测试、审核和 Draft/Ready 状态放进机器可读门禁，能减少误发布、假绿和错误合并。
