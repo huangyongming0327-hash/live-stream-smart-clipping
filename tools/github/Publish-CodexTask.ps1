@@ -70,8 +70,18 @@ if ($LASTEXITCODE -ne 0) {
 }
 $commit = (& git -C $repositoryRoot rev-parse HEAD).Trim()
 
-& git -C $repositoryRoot push -u origin $branch
-if ($LASTEXITCODE -ne 0) {
+$pushSucceeded = $false
+for ($attempt = 1; $attempt -le 3; $attempt++) {
+    if ($attempt -gt 1) {
+        Start-Sleep -Seconds 2
+    }
+    & git -C $repositoryRoot push -u origin $branch
+    if ($LASTEXITCODE -eq 0) {
+        $pushSucceeded = $true
+        break
+    }
+}
+if (-not $pushSucceeded) {
     throw "Normal branch push failed."
 }
 

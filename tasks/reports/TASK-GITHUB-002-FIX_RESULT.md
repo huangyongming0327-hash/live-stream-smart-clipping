@@ -163,7 +163,7 @@ The tag and branch were pushed normally. No old commit or tag was pushed.
 - remote smoke branch: deleted
 - local smoke branch: deleted
 
-GitHub returned a transient GraphQL 504 during the first post-create verification. The PR had been created successfully. The publisher was subsequently hardened to recover an already-created PR and verify it through the REST API, avoiding duplicate PR creation.
+GitHub returned a transient GraphQL 504 during the first post-create verification. The PR had been created successfully. A later normal branch push also encountered a transient connection reset. The publisher was subsequently hardened with bounded normal-push retries, recovery of an already-created PR, and REST verification, without force push or duplicate PR creation.
 
 ## 11. Remote content verification
 
