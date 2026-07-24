@@ -119,7 +119,8 @@ if ($createExitCode -ne 0 -or [string]::IsNullOrWhiteSpace($prUrl)) {
             -f "head=${owner}:$branch" `
             -f "base=$BaseBranch"
         if ($LASTEXITCODE -eq 0) {
-            $pulls = @($pullsJson | ConvertFrom-Json)
+            $pullsParsed = $pullsJson | ConvertFrom-Json
+            $pulls = @($pullsParsed | Where-Object { $null -ne $_ })
             $matching = @($pulls | Where-Object {
                 $_.head.ref -eq $branch -and $_.base.ref -eq $BaseBranch
             })

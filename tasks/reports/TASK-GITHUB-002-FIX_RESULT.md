@@ -3,6 +3,7 @@
 - Execution date: 2026-07-24 (Asia/Shanghai)
 - Public working-copy path: `<PROJECT_ROOT>`
 - Repository: https://github.com/huangyongming0327-hash/live-stream-smart-clipping
+- Result PR: https://github.com/huangyongming0327-hash/live-stream-smart-clipping/pull/2
 - License: Apache License 2.0
 - Merge policy: automated upload, never automated merge
 
@@ -163,7 +164,7 @@ The tag and branch were pushed normally. No old commit or tag was pushed.
 - remote smoke branch: deleted
 - local smoke branch: deleted
 
-GitHub returned a transient GraphQL 504 during the first post-create verification. The PR had been created successfully. A later normal branch push also encountered a transient connection reset. The publisher was subsequently hardened with bounded normal-push retries, recovery of an already-created PR, and REST verification, without force push or duplicate PR creation.
+GitHub returned a transient GraphQL 504 during the first post-create verification. The PR had been created successfully. A later normal branch push also encountered a transient connection reset. The publisher was subsequently hardened with bounded normal-push retries, null-safe recovery of an already-created PR, and REST verification, without force push or duplicate PR creation.
 
 ## 11. Remote content verification
 
@@ -180,8 +181,11 @@ No model, media, environment, runtime, cache, log, secret, user data, original p
 
 - local repository: `<PROJECT_ROOT>`
 - final task branch: `chore/TASK-GITHUB-002-result`
-- publication method: safety scan, automatic commit, normal push, and Draft PR
-- result PR: recorded in the final handoff after creation
+- publication method: safety scan, automatic commit, normal push, and Draft PR; a one-time non-persistent DNS resolution override was needed for the final normal push while preserving TLS hostname verification
+- result PR: https://github.com/huangyongming0327-hash/live-stream-smart-clipping/pull/2
+- result PR state: open Draft
+- result PR required checks: `repository-safety`, `lightweight-tests`, and `task-report-gate`
+- result PR auto-merge: disabled
 - result PR merge: intentionally not performed
 - Git worktree/index after publication: clean
 - ignored source-test runtime output: local only and not uploaded
