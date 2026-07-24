@@ -57,7 +57,8 @@
 - FIX2 已在公开工作副本完成本地实现：统一 source-only 测试入口会逐项传播原生命令退出码，GitHub Windows 中文子进程测试改为确定性 UTF-8 字节输出，workflow 已增加 concurrency cancellation。
 - Start、Publish、Audit 和 Handoff 脚本现由 `.github/liveclip-workflow.json` 绑定规范仓库；Start 同步最新 `master`，Publish 提交前运行测试，Audit 支持单一报告，Handoff 输出审核分数、head SHA、报告和合并资格。
 - Windows PowerShell 5.1 临时 Git 仓库行为矩阵为 23 passed、0 failed；本地 source-only 为基础 110 passed/1 deselected、ASR 35 passed/2 deselected、均为 0 failed，`pip check` 通过。
-- 当前等待 PR #2 最新 Actions 的完整日志验证和 TASK-GITHUB-002-FIX2-R 独立审核；不得写成已经通过在线审核或已经可合并。
+- FIX2 实现提交 `465cab37bece9d4ee8c679d792f6c472bd9825b4` 的三项 Actions 已实际执行并通过；`lightweight-tests` 完整 259 行日志确认基础与 ASR 均为 0 failed、三个阶段退出码为 0、`pip check` 通过。最终证据提交仍须按同一标准复核最新 run。
+- 当前只等待最终 latest-head Actions 复核和 TASK-GITHUB-002-FIX2-R 独立审核；不得写成已经通过在线审核或已经可合并。
 - 未执行人工准确率审核，未执行 TASK-003。
 
 ## TASK-000-FIX 完成内容
