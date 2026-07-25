@@ -125,13 +125,17 @@ def test_malformed_probe_json_is_rejected(tmp_path: Path) -> None:
 def test_process_runner_preserves_chinese_output() -> None:
     result = run_process(
         Path(sys.executable),
-        ("-c", "print('中文子进程输出')"),
+        (
+            "-c",
+            "import sys; "
+            "sys.stdout.buffer.write('中文子进程输出'.encode('utf-8'))",
+        ),
         timeout_seconds=5,
     )
     assert result.returncode == 0
-    assert "中文子进程输出" in result.stdout
+    assert result.stdout == "中文子进程输出"
     assert result.stdout_details.raw_byte_length > 0
-    assert result.stdout_details.encoding_used in {"utf-8", "cp936"}
+    assert result.stdout_details.encoding_used == "utf-8"
     assert not result.stdout_details.replacement_occurred
 
 
@@ -190,14 +194,19 @@ def test_process_runner_returns_structured_nonzero_failure() -> None:
     with pytest.raises(ProcessExecutionError) as caught:
         run_process(
             Path(sys.executable),
-            ("-c", "import sys; print('失败信息', file=sys.stderr); sys.exit(7)"),
+            (
+                "-c",
+                "import sys; "
+                "sys.stderr.buffer.write('失败信息'.encode('utf-8')); "
+                "sys.exit(7)",
+            ),
             timeout_seconds=5,
         )
     assert caught.value.failure.returncode == 7
     assert not caught.value.failure.timed_out
-    assert "失败信息" in caught.value.failure.stderr
+    assert caught.value.failure.stderr == "失败信息"
     assert caught.value.failure.stderr_details.raw_byte_length > 0
-    assert caught.value.failure.stderr_details.encoding_used in {"utf-8", "cp936"}
+    assert caught.value.failure.stderr_details.encoding_used == "utf-8"
     assert not caught.value.failure.stderr_details.replacement_occurred
 
 

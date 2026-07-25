@@ -12,13 +12,17 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: pr-checks-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   repository-safety:
     name: repository-safety
     runs-on: windows-latest
     steps:
       - name: Check out source
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           fetch-depth: 0
       - name: Scan tracked repository content
@@ -33,33 +37,33 @@ jobs:
     runs-on: windows-latest
     steps:
       - name: Check out source
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       - name: Set up Python 3.12
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
         with:
           python-version: "3.12"
       - name: Install source-only development dependencies
         shell: powershell
         run: |
           python -m pip install --disable-pip-version-check -r requirements-dev.lock.txt
+          if ($LASTEXITCODE -ne 0) {
+            throw "Installing locked development dependencies failed with exit code $LASTEXITCODE."
+          }
           python -m pip install --disable-pip-version-check --no-deps -e .
+          if ($LASTEXITCODE -ne 0) {
+            throw "Installing the repository package failed with exit code $LASTEXITCODE."
+          }
       - name: Run lightweight source tests
         shell: powershell
         run: |
-          python -m pytest .\tests `
-            --ignore .\tests\test_media_integration.py `
-            --ignore .\tests\test_ffmpeg_install_source.py `
-            -k "not probe_corrupt_file_returns_clear_error"
-          python -m pytest .\experiments\asr\tests `
-            -k "not existing_399_sentence_info_result_is_byte_for_byte_reproducible"
-          python -m pip check
+          .\tools\github\Invoke-SourceOnlyTests.ps1
 
   task-report-gate:
     name: task-report-gate
     runs-on: windows-latest
     steps:
       - name: Check out full history
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           fetch-depth: 0
       - name: Require a task report

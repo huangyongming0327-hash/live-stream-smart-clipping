@@ -41,6 +41,26 @@
 - 后续开发只允许使用 `task/`、`fix/` 或 `chore/` 分支，并通过 Draft PR、自动检查和独立审核报告流转；不会自动合并。
 - TASK-002 技术阶段已经通过，但人工准确率审核尚未完成，TASK-003 尚未开始。
 
+## TASK-GITHUB-002-FIX
+
+- 已从 TASK-002 验收快照建立全新的脱敏公开 Git 历史；原私有仓库和旧 Git 对象保持本地归档状态，没有重写或上传。
+- 公开基线已通过文件、个人信息、凭据、媒体、模型、二进制和大文件扫描。
+- GitHub Actions 提供 `repository-safety`、`lightweight-tests` 和 `task-report-gate` 三项检查。
+- `master` ruleset 要求 PR、三项检查和会话解决，并禁止删除和非快进更新；仓库 auto-merge 关闭。
+- 自动提交、普通 push、Draft PR 和 handoff 冒烟验证已经通过；冒烟 PR 已关闭且未合并。
+- 本结果通过单独 Draft PR 交付，等待独立审核和用户手动决定是否合并。
+- 未执行人工准确率审核，未执行 TASK-003。
+
+## TASK-GITHUB-002-FIX2
+
+- TASK-GITHUB-002-FIX-R 独立审核为 65/100、不通过，并确认 CI 假绿和单审核报告发布器崩溃两项阻断；PR #2 继续保持 Draft，暂不合并。
+- FIX2 已在公开工作副本完成本地实现：统一 source-only 测试入口会逐项传播原生命令退出码，GitHub Windows 中文子进程测试改为确定性 UTF-8 字节输出，workflow 已增加 concurrency cancellation。
+- Start、Publish、Audit 和 Handoff 脚本现由 `.github/liveclip-workflow.json` 绑定规范仓库；Start 同步最新 `master`，Publish 提交前运行测试，Audit 支持单一报告，Handoff 输出审核分数、head SHA、报告和合并资格。
+- Windows PowerShell 5.1 临时 Git 仓库行为矩阵为 23 passed、0 failed；本地 source-only 为基础 110 passed/1 deselected、ASR 35 passed/2 deselected、均为 0 failed，`pip check` 通过。
+- FIX2 实现提交 `465cab37bece9d4ee8c679d792f6c472bd9825b4` 的三项 Actions 已实际执行并通过；`lightweight-tests` 完整 259 行日志确认基础与 ASR 均为 0 failed、三个阶段退出码为 0、`pip check` 通过。最终证据提交仍须按同一标准复核最新 run。
+- 当前只等待最终 latest-head Actions 复核和 TASK-GITHUB-002-FIX2-R 独立审核；不得写成已经通过在线审核或已经可合并。
+- 未执行人工准确率审核，未执行 TASK-003。
+
 ## TASK-000-FIX 完成内容
 
 - 三个顶层 Schema 版本冻结为 `1.0`，启用严格类型、有限数和未知字段拒绝；
@@ -83,7 +103,7 @@
 
 ## 建议下一个任务
 
-- 下一步仅建议另开单独任务执行人工准确率审核；不在本任务内自动执行人工审核或 TASK-003。
+- 下一步仅建议 TASK-GITHUB-002-FIX2-R 独立审核；本阶段不执行人工准确率审核或 TASK-003。
 
 ## 约束核验
 
