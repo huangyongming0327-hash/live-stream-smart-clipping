@@ -89,6 +89,7 @@ ffmpeg*.tar*
 *.tflite
 
 # Local user data and large artifacts
+local-data/
 项目/*
 !项目/.gitkeep
 模型/*
