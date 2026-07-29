@@ -1,0 +1,461 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; media-src 'self' data: blob:">
+  <title>ASR 本地人工听音审核</title>
+  <style>
+    :root { color-scheme: light; font-family: "Segoe UI", "Microsoft YaHei", sans-serif; }
+    * { box-sizing: border-box; }
+    body { margin: 0; color: #1f2937; background: #f3f4f6; }
+    button, select, textarea, input { font: inherit; }
+    button { cursor: pointer; }
+    header { position: sticky; top: 0; z-index: 4; padding: 12px 18px; color: white; background: #173f5f; }
+    header h1 { margin: 0 0 8px; font-size: 20px; }
+    .toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+    .toolbar button, .file-label { padding: 7px 10px; border: 1px solid #a9c3d6; border-radius: 6px; color: #173f5f; background: white; }
+    .file-label { cursor: pointer; }
+    #importFile { display: none; }
+    #progress { margin-right: auto; font-weight: 700; }
+    #saveStatus { min-width: 84px; font-size: 13px; color: #d9edf7; }
+    .layout { display: grid; grid-template-columns: 230px minmax(0, 1fr); max-width: 1240px; margin: 0 auto; }
+    aside { min-height: calc(100vh - 92px); padding: 16px; border-right: 1px solid #d1d5db; background: white; }
+    aside label { display: block; margin-bottom: 12px; }
+    #windowList { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+    .window-button { padding: 8px 4px; border: 1px solid #cbd5e1; border-radius: 5px; background: #f8fafc; }
+    .window-button.current { outline: 3px solid #60a5fa; }
+    .window-button.done { border-color: #15803d; color: #166534; background: #dcfce7; }
+    main { padding: 18px; min-width: 0; }
+    .panel { margin-bottom: 14px; padding: 16px; border: 1px solid #d1d5db; border-radius: 9px; background: white; box-shadow: 0 1px 2px #00000010; }
+    .title-row { display: flex; flex-wrap: wrap; gap: 8px 18px; align-items: baseline; }
+    .title-row h2 { margin: 0; }
+    .muted { color: #64748b; }
+    audio { width: 100%; margin-top: 12px; }
+    .candidate-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+    .candidate { padding: 12px; border: 1px solid #cbd5e1; border-radius: 7px; background: #f8fafc; }
+    .candidate h3 { margin: 0 0 8px; font-size: 16px; }
+    .candidate-text { min-height: 96px; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.55; }
+    .field { margin-top: 13px; }
+    .field > label, .field > strong { display: block; margin-bottom: 5px; font-weight: 650; }
+    select, textarea { width: 100%; padding: 8px; border: 1px solid #94a3b8; border-radius: 5px; background: white; }
+    textarea { min-height: 84px; resize: vertical; }
+    .tags { display: grid; grid-template-columns: 1fr; gap: 4px; margin-top: 9px; font-size: 13px; }
+    .reviewed-box { padding: 11px; border: 2px solid #2563eb; border-radius: 7px; background: #eff6ff; }
+    .nav { display: flex; justify-content: space-between; gap: 10px; }
+    .nav button { min-width: 120px; padding: 10px; border: 0; border-radius: 6px; color: white; background: #2563eb; }
+    .warning { color: #9a3412; }
+    @media (max-width: 900px) {
+      .layout { grid-template-columns: 1fr; }
+      aside { min-height: auto; border-right: 0; border-bottom: 1px solid #d1d5db; }
+      #windowList { grid-template-columns: repeat(10, 1fr); }
+      .candidate-grid { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 620px) {
+      #windowList { grid-template-columns: repeat(5, 1fr); }
+      main { padding: 10px; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>ASR 本地人工听音审核</h1>
+    <div class="toolbar">
+      <span id="progress">已完成 0/0</span>
+      <span id="saveStatus">尚未保存</span>
+      <button id="saveButton" type="button">手动保存</button>
+      <button id="exportJson" type="button">导出 JSON</button>
+      <button id="exportCsv" type="button">导出 CSV</button>
+      <label class="file-label">导入 JSON<input id="importFile" type="file" accept=".json,application/json"></label>
+      <button id="clearButton" type="button">清空本地结果</button>
+    </div>
+  </header>
+  <div class="layout">
+    <aside>
+      <label><input id="incompleteOnly" type="checkbox"> 仅显示未完成</label>
+      <div id="windowList" aria-label="审核窗口列表"></div>
+    </aside>
+    <main>
+      <section class="panel">
+        <div class="title-row">
+          <h2 id="windowHeading"></h2>
+          <span id="timeRange" class="muted"></span>
+          <span id="windowLabel" class="muted"></span>
+        </div>
+        <audio id="audioPlayer" controls preload="metadata"></audio>
+      </section>
+
+      <section id="candidateGrid" class="candidate-grid" aria-label="三模型候选"></section>
+
+      <section class="panel">
+        <div class="field">
+          <label for="bestCandidate">最佳结果（必填）</label>
+          <select id="bestCandidate">
+            <option value="">请选择</option>
+            <option value="SenseVoice">SenseVoice</option>
+            <option value="Paraformer">Paraformer</option>
+            <option value="Faster-Whisper">Faster-Whisper</option>
+            <option value="tie">并列</option>
+            <option value="none">都不可用</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="referenceText">实际听写文本（选填）</label>
+          <textarea id="referenceText"></textarea>
+        </div>
+        <div class="field">
+          <label><input id="hardToHear" type="checkbox"> 音频难以辨认</label>
+        </div>
+        <div class="field">
+          <label for="notes">备注（选填）</label>
+          <textarea id="notes"></textarea>
+        </div>
+        <div class="field reviewed-box">
+          <label><input id="reviewed" type="checkbox"> 本窗口已完成（候选与三项严重度填写后才能勾选）</label>
+        </div>
+      </section>
+
+      <nav class="nav">
+        <button id="previousButton" type="button">上一个</button>
+        <button id="nextButton" type="button">下一个</button>
+      </nav>
+      <p class="warning">所有内容只保存在此浏览器和本地导出文件中，不会发送到网络。</p>
+    </main>
+  </div>
+
+  <script id="reviewPackageData" type="application/json">__REVIEW_DATA_JSON__</script>
+  <script>
+    "use strict";
+    const packageData = JSON.parse(document.getElementById("reviewPackageData").textContent);
+    const models = ["SenseVoice", "Paraformer", "Faster-Whisper"];
+    const allowedCandidates = new Set([...models, "tie", "none"]);
+    const allowedTags = [
+      "漏字/漏词", "多字/幻觉", "错字/替换", "人名/品牌/专名", "英文",
+      "数字", "标点/可读性", "非中文异常字符", "切点/分段", "其他"
+    ];
+    const storageKey = "liveclip.asr-human-review." + packageData.source_manifest_sha256;
+    let currentIndex = 0;
+    let saveTimer = null;
+    let state = Object.fromEntries(packageData.windows.map(item => [
+      item.window_id, structuredClone(item.review)
+    ]));
+
+    const byId = id => document.getElementById(id);
+    const sourceById = new Map(packageData.windows.map(item => [item.window_id, item]));
+
+    function buildExport() {
+      const windows = packageData.windows.map(source => structuredClone(state[source.window_id]));
+      const completedCount = windows.filter(item => item.reviewed).length;
+      return {
+        schema_version: "1.0",
+        review_type: "asr_human_listening_review",
+        source_manifest_sha256: packageData.source_manifest_sha256,
+        completed: completedCount === windows.length,
+        completed_window_count: completedCount,
+        total_window_count: windows.length,
+        windows
+      };
+    }
+
+    function validateImport(value) {
+      if (!value || value.schema_version !== "1.0" ||
+          value.review_type !== "asr_human_listening_review") {
+        throw new Error("JSON 类型或版本不正确");
+      }
+      if (value.source_manifest_sha256 !== packageData.source_manifest_sha256) {
+        throw new Error("JSON 不属于此审核包");
+      }
+      if (!Array.isArray(value.windows) || value.windows.length !== packageData.windows.length) {
+        throw new Error("窗口数量不正确");
+      }
+      const seen = new Set();
+      let reviewedCount = 0;
+      for (const row of value.windows) {
+        const source = sourceById.get(row.window_id);
+        if (!source) throw new Error("包含未知窗口：" + row.window_id);
+        if (seen.has(row.window_id)) throw new Error("包含重复窗口：" + row.window_id);
+        seen.add(row.window_id);
+        if (row.start !== source.start || row.end !== source.end) {
+          throw new Error("窗口时间与审核包不一致：" + row.window_id);
+        }
+        if (row.best_candidate !== null && !allowedCandidates.has(row.best_candidate)) {
+          throw new Error("最佳候选值无效：" + row.window_id);
+        }
+        if (!row.severity || !row.error_tags) throw new Error("缺少模型审核字段");
+        for (const model of models) {
+          const level = row.severity[model];
+          if (level !== null && (!Number.isInteger(level) || level < 0 || level > 3)) {
+            throw new Error("严重度必须为 0—3：" + row.window_id);
+          }
+          if (!Array.isArray(row.error_tags[model]) ||
+              new Set(row.error_tags[model]).size !== row.error_tags[model].length ||
+              row.error_tags[model].some(tag => !allowedTags.includes(tag))) {
+            throw new Error("错误标签无效：" + row.window_id);
+          }
+        }
+        if (typeof row.reference_text !== "string" ||
+            typeof row.audio_hard_to_hear !== "boolean" ||
+            typeof row.notes !== "string" || typeof row.reviewed !== "boolean") {
+          throw new Error("窗口字段类型不正确：" + row.window_id);
+        }
+        if (row.reviewed) {
+          reviewedCount += 1;
+          if (row.best_candidate === null || models.some(model => row.severity[model] === null)) {
+            throw new Error("已完成窗口缺少必填项：" + row.window_id);
+          }
+        }
+      }
+      if (seen.size !== sourceById.size) throw new Error("窗口集合不完整");
+      const completed = reviewedCount === packageData.windows.length;
+      if (value.completed_window_count !== reviewedCount ||
+          value.total_window_count !== packageData.windows.length ||
+          value.completed !== completed) {
+        throw new Error("完成状态统计不一致");
+      }
+      return value;
+    }
+
+    function saveNow(message = "已保存") {
+      localStorage.setItem(storageKey, JSON.stringify(buildExport()));
+      byId("saveStatus").textContent = message;
+      updateProgress();
+    }
+
+    function scheduleSave() {
+      byId("saveStatus").textContent = "正在保存…";
+      clearTimeout(saveTimer);
+      saveTimer = setTimeout(() => saveNow("已自动保存"), 250);
+    }
+
+    function updateProgress() {
+      const completed = Object.values(state).filter(item => item.reviewed).length;
+      byId("progress").textContent = `已完成 ${completed}/${packageData.windows.length}`;
+      renderWindowList();
+    }
+
+    function visibleIndices() {
+      if (!byId("incompleteOnly").checked) return packageData.windows.map((_, index) => index);
+      return packageData.windows
+        .map((item, index) => state[item.window_id].reviewed ? -1 : index)
+        .filter(index => index >= 0);
+    }
+
+    function renderWindowList() {
+      const list = byId("windowList");
+      list.textContent = "";
+      const incompleteOnly = byId("incompleteOnly").checked;
+      packageData.windows.forEach((source, index) => {
+        const review = state[source.window_id];
+        if (incompleteOnly && review.reviewed) return;
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "window-button";
+        if (index === currentIndex) button.classList.add("current");
+        if (review.reviewed) button.classList.add("done");
+        button.textContent = source.window_id.padStart(2, "0");
+        button.setAttribute("aria-label", `窗口 ${source.window_id}${review.reviewed ? "，已完成" : ""}`);
+        button.addEventListener("click", () => { currentIndex = index; render(); });
+        list.appendChild(button);
+      });
+    }
+
+    function setReviewValue(key, value) {
+      const id = packageData.windows[currentIndex].window_id;
+      state[id][key] = value;
+      scheduleSave();
+    }
+
+    function candidateCard(model, source, review) {
+      const card = document.createElement("article");
+      card.className = "candidate";
+      const heading = document.createElement("h3");
+      heading.textContent = model;
+      const text = document.createElement("div");
+      text.className = "candidate-text";
+      text.textContent = source.candidate_texts[model];
+      const severityLabel = document.createElement("label");
+      severityLabel.textContent = "错误严重度（必填）";
+      const select = document.createElement("select");
+      select.innerHTML = [
+        '<option value="">请选择</option>',
+        '<option value="0">0：无明显错误</option>',
+        '<option value="1">1：轻微错误</option>',
+        '<option value="2">2：明显错误</option>',
+        '<option value="3">3：严重错误或不可用</option>'
+      ].join("");
+      select.value = review.severity[model] === null ? "" : String(review.severity[model]);
+      select.addEventListener("change", () => {
+        review.severity[model] = select.value === "" ? null : Number(select.value);
+        if (review.reviewed && review.severity[model] === null) review.reviewed = false;
+        scheduleSave();
+        renderWindowList();
+      });
+      const tagTitle = document.createElement("strong");
+      tagTitle.textContent = "错误标签（选填）";
+      const tags = document.createElement("div");
+      tags.className = "tags";
+      for (const tag of allowedTags) {
+        const label = document.createElement("label");
+        const checkbox = document.createElement("input");
+        checkbox.type = "checkbox";
+        checkbox.checked = review.error_tags[model].includes(tag);
+        checkbox.addEventListener("change", () => {
+          const selected = new Set(review.error_tags[model]);
+          checkbox.checked ? selected.add(tag) : selected.delete(tag);
+          review.error_tags[model] = allowedTags.filter(item => selected.has(item));
+          scheduleSave();
+        });
+        label.append(checkbox, " " + tag);
+        tags.appendChild(label);
+      }
+      card.append(heading, text, severityLabel, select, tagTitle, tags);
+      return card;
+    }
+
+    function render() {
+      const source = packageData.windows[currentIndex];
+      const review = state[source.window_id];
+      byId("windowHeading").textContent = `窗口 ${source.window_id}`;
+      byId("timeRange").textContent = `${source.start.toFixed(3)}—${source.end.toFixed(3)} 秒`;
+      byId("windowLabel").textContent = source.label;
+      byId("audioPlayer").src = source.audio_file;
+      const grid = byId("candidateGrid");
+      grid.textContent = "";
+      models.forEach(model => grid.appendChild(candidateCard(model, source, review)));
+      byId("bestCandidate").value = review.best_candidate || "";
+      byId("referenceText").value = review.reference_text;
+      byId("hardToHear").checked = review.audio_hard_to_hear;
+      byId("notes").value = review.notes;
+      byId("reviewed").checked = review.reviewed;
+      updateProgress();
+    }
+
+    function move(direction) {
+      const visible = visibleIndices();
+      if (!visible.length) return;
+      let position = visible.indexOf(currentIndex);
+      if (position < 0) position = direction > 0 ? -1 : 0;
+      currentIndex = visible[(position + direction + visible.length) % visible.length];
+      render();
+      window.scrollTo({top: 0, behavior: "smooth"});
+    }
+
+    function download(filename, contents, type) {
+      const blob = new Blob([contents], {type});
+      const link = document.createElement("a");
+      link.href = URL.createObjectURL(blob);
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(link.href), 0);
+    }
+
+    function csvCell(value) {
+      const text = String(value ?? "");
+      return /[",\r\n]/.test(text) ? '"' + text.replaceAll('"', '""') + '"' : text;
+    }
+
+    function exportCsvText(payload) {
+      const headers = [
+        "window_id", "start", "end", "best_candidate",
+        "SenseVoice_severity", "Paraformer_severity", "Faster-Whisper_severity",
+        "SenseVoice_error_tags", "Paraformer_error_tags", "Faster-Whisper_error_tags",
+        "reference_text", "audio_hard_to_hear", "notes", "reviewed"
+      ];
+      const rows = payload.windows.map(row => [
+        row.window_id, row.start, row.end, row.best_candidate || "",
+        ...models.map(model => row.severity[model] ?? ""),
+        ...models.map(model => row.error_tags[model].join("|")),
+        row.reference_text, row.audio_hard_to_hear, row.notes, row.reviewed
+      ]);
+      return "\ufeff" + [headers, ...rows].map(row => row.map(csvCell).join(",")).join("\r\n") + "\r\n";
+    }
+
+    byId("bestCandidate").addEventListener("change", event => {
+      setReviewValue("best_candidate", event.target.value || null);
+      if (!event.target.value && state[packageData.windows[currentIndex].window_id].reviewed) {
+        setReviewValue("reviewed", false);
+        byId("reviewed").checked = false;
+      }
+    });
+    byId("referenceText").addEventListener("input", event => setReviewValue("reference_text", event.target.value));
+    byId("hardToHear").addEventListener("change", event => setReviewValue("audio_hard_to_hear", event.target.checked));
+    byId("notes").addEventListener("input", event => setReviewValue("notes", event.target.value));
+    byId("reviewed").addEventListener("change", event => {
+      const review = state[packageData.windows[currentIndex].window_id];
+      if (event.target.checked &&
+          (review.best_candidate === null || models.some(model => review.severity[model] === null))) {
+        alert("请先填写最佳结果和三个模型的错误严重度。");
+        event.target.checked = false;
+        return;
+      }
+      review.reviewed = event.target.checked;
+      scheduleSave();
+      updateProgress();
+    });
+    byId("saveButton").addEventListener("click", () => saveNow("已手动保存"));
+    byId("previousButton").addEventListener("click", () => move(-1));
+    byId("nextButton").addEventListener("click", () => move(1));
+    byId("incompleteOnly").addEventListener("change", () => {
+      const visible = visibleIndices();
+      if (visible.length && !visible.includes(currentIndex)) currentIndex = visible[0];
+      render();
+    });
+    byId("exportJson").addEventListener("click", () => {
+      const payload = buildExport();
+      const name = payload.completed ? "asr-human-review-completed.json" : "asr-human-review-draft.json";
+      download(name, JSON.stringify(payload, null, 2) + "\n", "application/json;charset=utf-8");
+    });
+    byId("exportCsv").addEventListener("click", () => {
+      const payload = buildExport();
+      const name = payload.completed ? "asr-human-review-completed.csv" : "asr-human-review-draft.csv";
+      download(name, exportCsvText(payload), "text/csv;charset=utf-8");
+    });
+    byId("importFile").addEventListener("change", event => {
+      const file = event.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        try {
+          const imported = validateImport(JSON.parse(reader.result));
+          state = Object.fromEntries(imported.windows.map(item => [item.window_id, structuredClone(item)]));
+          saveNow("已导入并保存");
+          render();
+          alert("导入成功。");
+        } catch (error) {
+          alert("导入失败：" + error.message);
+        } finally {
+          event.target.value = "";
+        }
+      };
+      reader.readAsText(file, "utf-8");
+    });
+    byId("clearButton").addEventListener("click", () => {
+      if (!confirm("第一次确认：确定要清空全部本地审核结果吗？")) return;
+      if (!confirm("第二次确认：此操作会清空20个窗口的本地进度，仍要继续吗？")) return;
+      localStorage.removeItem(storageKey);
+      state = Object.fromEntries(packageData.windows.map(item => [
+        item.window_id, structuredClone(item.review)
+      ]));
+      currentIndex = 0;
+      byId("saveStatus").textContent = "已清空";
+      render();
+    });
+
+    try {
+      const saved = localStorage.getItem(storageKey);
+      if (saved) {
+        const restored = validateImport(JSON.parse(saved));
+        state = Object.fromEntries(restored.windows.map(item => [item.window_id, structuredClone(item)]));
+        byId("saveStatus").textContent = "已恢复本地进度";
+      }
+    } catch (error) {
+      byId("saveStatus").textContent = "本地进度无效，未载入";
+    }
+    window.addEventListener("beforeunload", () => saveNow("已保存"));
+    render();
+  </script>
+</body>
+</html>

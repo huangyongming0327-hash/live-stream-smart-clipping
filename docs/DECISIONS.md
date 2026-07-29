@@ -158,3 +158,12 @@
 - 发布决策：任务发布必须指明本次 RESULT 报告并在 stage/commit 前通过统一测试；审核发布只接受一个或多个 AUDIT 报告；push 始终普通且有界，不 force、不 merge、不启用 auto-merge、不重复创建同 head/base PR。
 - 交接决策：Handoff 同时报告 head SHA、required checks、RESULT/AUDIT、审核分数/结论、阻断问题、`eligible_to_mark_ready` 和 `eligible_for_manual_merge`。只有 Ready PR 才可能具备人工合并资格，最终动作始终由用户决定。
 - 原因：本项目的本地 Codex 发布器服务于唯一公开仓库；把仓库身份、测试、审核和 Draft/Ready 状态放进机器可读门禁，能减少误发布、假绿和错误合并。
+
+## D-0023｜20窗口本地人工听音审核包
+
+- 状态：已接受（TASK-002-HUMAN-001 本地生成与验证完成，等待用户人工听音）。
+- 证据决策：人工听音是 SenseVoice、Paraformer 与 Faster-Whisper 最终模型选择的重要证据；没有人工标准文本时不伪造 CER/WER，也不宣布准确率冠军。
+- 存储决策：真实音频、运行时审核数据、用户结果、备注及 JSON/CSV 导出默认只保存在 Git 忽略的 `local-data/`。GitHub 只保存生成器、离线 HTML 模板、合成测试、使用说明和脱敏任务报告。
+- 范围决策：第一轮只审核既有 20 个窗口，页面使用相对音频路径和 localStorage，可导入/导出 JSON、导出 CSV；本阶段不运行 ASR 模型、不调用云端、不修改正式 `src/liveclip`，也不执行 TASK-003。
+- 时间边界决策：既有 CSV 以三位小数保存时间，允许末端因表示舍入比 WAV 精确时长最多高半毫秒；原值保留在 manifest，实际 PCM 帧严格钳制到 WAV 边界，更大的越界仍拒绝。
+- 原因：轻量、可追溯、完全离线的人工证据闭环可以在不上传真实直播音频的前提下补足纯技术指标无法回答的文字质量问题。
