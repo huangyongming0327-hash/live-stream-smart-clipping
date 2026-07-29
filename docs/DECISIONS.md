@@ -167,3 +167,14 @@
 - 范围决策：第一轮只审核既有 20 个窗口，页面使用相对音频路径和 localStorage，可导入/导出 JSON、导出 CSV；本阶段不运行 ASR 模型、不调用云端、不修改正式 `src/liveclip`，也不执行 TASK-003。
 - 时间边界决策：既有 CSV 以三位小数保存时间，允许末端因表示舍入比 WAV 精确时长最多高半毫秒；原值保留在 manifest，实际 PCM 帧严格钳制到 WAV 边界，更大的越界仍拒绝。
 - 原因：轻量、可追溯、完全离线的人工证据闭环可以在不上传真实直播音频的前提下补足纯技术指标无法回答的文字质量问题。
+
+## D-0024｜ASR MVP生产基线与人工结果门禁
+
+- 状态：TASK-002-HUMAN-002本地分析完成；等待独立审核、Draft PR三项检查和用户手动合并决定。
+- 输入门禁：完成版人工JSON必须与真实`review-manifest.json`的原始文件SHA-256精确匹配，且必须为`schema_version=1.0`、指定审核类型、`completed=true`、20/20窗口。`severity`和`error_tags`的模型键集合必须恰好等于SenseVoice、Paraformer、Faster-Whisper；额外键、重复/未知窗口、非法值或未知/重复标签均直接阻断，不自动修复。
+- 质量决策：20窗口中Paraformer明确胜出18次、聚合质量分92.58，SenseVoice胜出2次、49.00，Faster-Whisper胜出0次、40.00；三者平均severity分别为0.25、0.90、1.20，severity 3数量分别为0、0、1。没有难辨认窗口，因此全量与清晰音频子集排序一致。
+- 生产基线：MVP主模型为Paraformer，备用模型为SenseVoice；`decision_status=confirmed_mvp_baseline`，`decision_confidence=high`。人工质量是主证据；既有速度、内存、标点和时间戳能力只作次级工程证据，本任务不重新运行模型。
+- 评分口径：`winner_score`、`severity_quality_score`、`reliability_score`分别按胜出积分、0—3严重度和severity 3数量计算，聚合权重为45%/35%/20%；公开显示使用`ROUND_HALF_UP`保留2位小数，本地JSON同时保存未舍入数值和精确分数。
+- 隐私决策：原始人工JSON、用户备注、实际听写、逐窗口候选文本和`local-data/`不进入Git；公开材料只保留输入哈希、聚合统计、决策和样本限制。
+- 重新评估条件：模型或权重、预处理/切段规则、目标硬件、主要语种、噪声/专名分布或直播领域发生实质变化时，重新执行定向人工听音；当前20窗口单样本结果不是行业基准，也不称为CER/WER。
+- 阶段门禁：TASK-002只有在本任务独立审核通过且由用户决定合并后才能正式关闭；TASK-003在此之前继续禁止启动。
