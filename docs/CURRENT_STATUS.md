@@ -44,7 +44,8 @@
 ## TASK-003
 
 - 状态：单 MP4 → 分块音频 → 本地 ASR → `timeline.json` / `subtitles.srt` /
-  `transcript.txt` 已完成本地实现、fake adapter 单测和真实验证，等待 Draft PR 三项检查与独立审核。
+  `transcript.txt` 已完成实现、fake adapter 单测、真实验证和独立审核；PR #5 已合并，
+  merge commit 为 `0e619b6fbb3e34250f10b1719dfb5a666ea7020f`。
 - 默认 Paraformer，SenseVoice 为用户手动选择的低资源模式；模型加载和推理均由 socket
   守卫保持离线，不下载或更新模型。
 - 默认 60 秒顺序分块，每块完成后原子保存 `task_state.json`；真实异常终止验证从
@@ -56,6 +57,35 @@
 - source-only 回归：基础 128 passed/1 deselected、ASR 91 passed/2 deselected，
   均 0 failed；`pip check` 通过。
 - 真实媒体、模型、字幕、状态、缓存和 `local-data/` 保持 Git 忽略；未执行 TASK-004。
+
+## TASK-004
+
+- 状态：单 timeline 顺序语义分析、fake HTTP client 单测、真实 timeline 离线贯通、
+  中断恢复、最近 3 版本、真实文本模型 API 验证和最终 source-only 已完成；等待
+  Draft PR 三项检查与独立审核。
+- CLI 为 `python -m liveclip analyze --timeline "<PATH>\timeline.json"`；只支持一个
+  用户配置的 OpenAI-compatible Chat Completions HTTPS 接口，不安装厂商 SDK，不自动
+  切换或比较模型。
+- 固定窗口最多 10 分钟且约 12,000 字幕字符，不重叠、不拆 segment、顺序请求；
+  每窗口完成后原子保存状态，不并发、不做全文第二轮模型重排或 embeddings。
+- 模型只提出真实连续 segment 范围、标题、摘要、理由、quote segment ID 和原始分值；
+  程序计算时间、复制 quote、计算总分、执行 15—180 秒与 60 分门槛、60% 重叠去重和
+  全局 20 个上限。
+- TASK-004 专项为 30 passed、0 failed；与 TASK-003/既有 analysis 定向合计
+  59 passed、0 failed。827.766 秒真实 timeline 的离线 fake-client 贯通为
+  169 segments、2 windows、2 topics、0 candidates。
+- 完整 source-only 为基础 158 passed/1 deselected、ASR 91 passed/2 deselected，
+  均 0 failed；`pip check` 通过。PublishCandidates 安全扫描 167 files、0 issues，
+  本地任务报告门禁通过。
+- 真实 `qwen-flash` 完成态运行：827.766 秒、169 segments、2 windows、2 requests、
+  16.282 秒、11 topics、6 candidates、6 recommended，分数范围 89—94；timeline SHA、
+  schema、范围、时间、quote、总分和状态清理全部回溯通过。
+- 前 3 候选人工抽查：3/3 quote 来自真实 segment；一项标题/理由/范围基本一致但营销
+  价格主张需合规复核，一项存在标题外推、弱 quote 和结尾不完整，不宜直接采用；一项
+  主题和理由基本一致但结尾略截断，且家庭健康隐私风险扣分偏低。真实候选必须继续经过
+  人工审核，不把模型推荐标记视为直接发布许可。
+- 真实视频、音频、timeline、analysis、state、字幕、API Key 和 `local-data/` 不进入
+  Git；离线 fake-client 结果不冒充真实 API 或候选质量证据。
 
 ## TASK-GIT-001
 
@@ -139,12 +169,13 @@
 - TASK-002 技术实验已由 TASK-002-FIX2-R 以 100/100 最终通过；公开仓库从该已验收快照建立新的干净历史。
 - 20窗口人工听音与结果分析已完成；MVP主模型为Paraformer、备用模型为SenseVoice，决策为高置信`confirmed_mvp_baseline`。
 - TASK-002-HUMAN-002 的发布完整性阻断已修复并复核；PR #4 已合并，TASK-002 已关闭。
-- TASK-003 已完成本地实现和真实验证，等待 Draft PR 自动检查与独立审核。
+- TASK-003 已通过独立审核并合并；其非阻断 backlog 未在 TASK-004 顺手修复。
+- TASK-004 已完成真实 API 验证和候选人工抽查，等待 Draft PR 三项检查与独立审核。
 
-## 建议下一个任务
+## 建议下一步
 
-- 下一步只建议独立审核 TASK-003，重点检查状态绑定、异常恢复、时间轴无重叠、
-  正式输出发布门禁、两模型真实离线调用和隐私边界；继续禁止 TASK-004。
+- 下一步只继续 TASK-004 的最终发布检查、Draft PR 三项 Actions 和独立审核交接；
+  继续禁止 TASK-005。
 
 ## 约束核验
 
@@ -154,4 +185,7 @@
 - TASK-002-FIX/FIX2 未下载或更新模型、未安装或更新依赖，未修改 SenseVoice/Faster-Whisper 适配器或正式 `src/liveclip`，也未重跑三套全长实验；
 - 原始样本前后 SHA-256 一致；未修改用户或系统 PATH、永久环境变量或电源计划；基础 `.venv` 未污染；未安装 CUDA、GPU PyTorch 或 NVIDIA 包；
 - TASK-003 真实输入、临时 WAV、正式字幕、状态和模型仍只位于 Git 忽略目录；
-  原视频前后 SHA-256 一致，未调用云端或收费 API，未执行 TASK-004。
+  原视频前后 SHA-256 一致，TASK-004 未读取或上传视频和音频；
+- TASK-004 真实请求只发送必要字幕字段，视频和音频未发送；API Key 未进入请求正文、
+  状态、日志、结果、报告或 Git；真实 timeline/analysis/state 均未上传，未执行
+  TASK-005。

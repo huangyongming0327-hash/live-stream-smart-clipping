@@ -6,7 +6,9 @@ LiveClip 是一个 Windows 本地优先的技术验证项目，目标是把长�
 
 - TASK-000 数据契约、TASK-001 FFmpeg 媒体链路和 TASK-002 本地 ASR
   选型已经通过对应审核。
-- TASK-003 已实现单 MP4 的本地分块转写生产流程，等待 Draft PR 检查与独立审核。
+- TASK-003 的单 MP4 本地分块转写生产流程已合并。
+- TASK-004 已实现单个 timeline 的顺序语义分析，并使用用户配置的低成本文本模型完成
+  一份真实 827.766 秒 timeline 验证；候选仍需人工审核后才能进入后续剪辑。
 - 项目仍处于开发和技术验证阶段，尚无正式一键安装版本。
 - MVP 默认模型为 Paraformer，用户可手动选择低资源 SenseVoice。
 
@@ -68,8 +70,34 @@ sample_liveclip/
 缺失、状态文件损坏、源视频/模型/关键参数变化、输出不可写或磁盘空间不足。发生失败时
 不会发布伪完成的 `timeline.json`。
 
-当前不支持 GUI、批量任务、队列、模型下载/自动切换、说话人分离、翻译、语义分段、
-爆点识别、候选审核或视频导出。
+## 单 timeline 语义分析
+
+只支持一个由用户配置的 OpenAI-compatible Chat Completions 文本模型接口：
+
+```powershell
+$env:LIVECLIP_LLM_ENDPOINT = "<HTTPS_CHAT_COMPLETIONS_URL>"
+$env:LIVECLIP_LLM_API_KEY = "<API_KEY>"
+$env:LIVECLIP_LLM_MODEL = "<MODEL_NAME>"
+
+python -m liveclip analyze `
+  --timeline "<PATH>\timeline.json"
+```
+
+未指定 `--output` 时，结果写入 timeline 同级目录：
+
+```text
+current_analysis.json
+analysis_history/
+```
+
+流程按最多 10 分钟、约 12,000 字符的固定非重叠窗口顺序请求，每完成一个窗口原子保存
+`.analysis_work/analysis_state.json`。中断后使用同一 timeline、模型、endpoint host 和
+窗口参数重跑即可继续。模型只接收 segment ID、相对毫秒时间和必要字幕文本；视频、
+音频、本地路径和 API Key 不会进入请求正文。时间、原句、总分、过滤和重叠去重均由
+程序根据真实 timeline 计算。
+
+当前不支持 GUI、批量任务、队列、模型下载/自动切换、说话人分离、翻译、候选审核、
+视频导出或 TASK-005。
 
 ## 开发检查
 

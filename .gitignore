@@ -86,6 +86,11 @@ subtitles.srt
 transcript.txt
 task_state.json
 
+# Local semantic analysis output
+current_analysis.json
+analysis_history/
+.analysis_work/
+
 # Large model and checkpoint formats
 *.bin
 *.safetensors
