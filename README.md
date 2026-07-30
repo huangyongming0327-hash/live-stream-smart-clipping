@@ -4,16 +4,72 @@ LiveClip 是一个 Windows 本地优先的技术验证项目，目标是把长�
 
 ## 当前阶段
 
-- TASK-000 数据契约、TASK-001 FFmpeg 媒体链路和 TASK-002 本地 ASR 技术验证已经通过对应审核。
+- TASK-000 数据契约、TASK-001 FFmpeg 媒体链路和 TASK-002 本地 ASR
+  选型已经通过对应审核。
+- TASK-003 已实现单 MP4 的本地分块转写生产流程，等待 Draft PR 检查与独立审核。
 - 项目仍处于开发和技术验证阶段，尚无正式一键安装版本。
-- 人工准确率审核尚未完成，因此不宣称准确率排名或最终生产模型。
-- TASK-003 尚未开始。
+- MVP 默认模型为 Paraformer，用户可手动选择低资源 SenseVoice。
 
 ## 本地组件
 
 - 媒体处理基于项目本地 FFmpeg。
 - ASR 技术验证覆盖本地 SenseVoice、Paraformer 和 Faster-Whisper 路线。
 - 本仓库不包含 FFmpeg 二进制、模型权重、真实视频或音频、运行字幕、识别结果、虚拟环境、缓存、日志和用户配置。
+
+## 单视频本地转写
+
+先确认本地资产根包含以下既有文件；程序不会下载或更新模型：
+
+```text
+tools/ffmpeg/bin/ffmpeg.exe
+tools/ffmpeg/bin/ffprobe.exe
+runtime/asr-envs/funasr/Scripts/python.exe
+runtime/asr-envs/sherpa-onnx/Scripts/python.exe
+模型/asr/paraformer-zh/model.pt
+模型/asr/fsmn-vad/model.pt
+模型/asr/ct-punc/model.pt
+模型/asr/sensevoice-small/model.int8.onnx
+模型/asr/sensevoice-small/tokens.txt
+模型/asr/sensevoice-small/silero_vad.onnx
+```
+
+默认 Paraformer：
+
+```powershell
+$env:LIVECLIP_ASSETS_ROOT = "<LOCAL_ASSETS_ROOT>"
+python -m liveclip transcribe `
+  --input "<VIDEO_PATH>\sample.mp4" `
+  --engine paraformer
+```
+
+低资源 SenseVoice：
+
+```powershell
+python -m liveclip transcribe `
+  --input "<VIDEO_PATH>\sample.mp4" `
+  --engine sensevoice
+```
+
+未指定 `--output` 时，输出到视频旁的 `sample_liveclip`：
+
+```text
+sample_liveclip/
+├─ timeline.json
+├─ subtitles.srt
+├─ transcript.txt
+└─ task_state.json
+```
+
+流程按 60 秒顺序分块，每块完成后更新状态。按 `Ctrl+C` 中断后，使用完全相同的
+输入、引擎、分块参数和输出目录重跑即可继续；已完成块不会再次识别。程序保持离线，
+不会因电池供电自动暂停。
+
+常见失败包括 MP4 不存在或无音轨、项目 FFmpeg 缺失、本地模型或对应 Python 环境
+缺失、状态文件损坏、源视频/模型/关键参数变化、输出不可写或磁盘空间不足。发生失败时
+不会发布伪完成的 `timeline.json`。
+
+当前不支持 GUI、批量任务、队列、模型下载/自动切换、说话人分离、翻译、语义分段、
+爆点识别、候选审核或视频导出。
 
 ## 开发检查
 

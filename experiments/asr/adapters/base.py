@@ -2,40 +2,18 @@
 
 from __future__ import annotations
 
-import contextlib
 import os
-import socket
 import time
 from pathlib import Path
-from typing import Any, Callable, Iterator
+from typing import Any, Callable
+
+from liveclip.asr.adapters import offline_network_guard
 
 from ..common import assess_silence, atomic_write_json, sha256_file, write_run_artifacts
 from ..resource_monitor import ResourceMonitor
 
 
 Transcribe = Callable[[str | Path], tuple[Any, dict[str, Any]]]
-
-
-@contextlib.contextmanager
-def offline_network_guard(enabled: bool) -> Iterator[None]:
-    """Fail closed if an offline probe attempts any socket connection."""
-
-    if not enabled:
-        yield
-        return
-    original_connect = socket.socket.connect
-    original_create_connection = socket.create_connection
-
-    def blocked_connect(*args: Any, **kwargs: Any) -> None:
-        raise RuntimeError("TASK-002 offline probe blocked a network connection")
-
-    socket.socket.connect = blocked_connect  # type: ignore[method-assign]
-    socket.create_connection = blocked_connect  # type: ignore[assignment]
-    try:
-        yield
-    finally:
-        socket.socket.connect = original_connect  # type: ignore[method-assign]
-        socket.create_connection = original_create_connection  # type: ignore[assignment]
 
 
 def environment_evidence() -> dict[str, Any]:
