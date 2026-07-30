@@ -76,6 +76,15 @@ ffmpeg*.tar*
 *.ogg
 *.flac
 *.wma
+*.srt
+
+# Local ASR production output
+*_liveclip/
+**/.work/
+timeline.json
+subtitles.srt
+transcript.txt
+task_state.json
 
 # Large model and checkpoint formats
 *.bin

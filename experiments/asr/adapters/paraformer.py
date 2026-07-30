@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from liveclip.asr.adapters import ParaformerAdapter
+
 from ..common import atomic_write_json, build_unified_result, new_segment, sha256_file
 from .base import execute_run
 
@@ -339,51 +341,21 @@ def main() -> None:
     parser.add_argument("--hotwords", default="直播 智能切片 人工智能 AI")
     args = parser.parse_args()
 
-    import funasr
-    import torch
-    from funasr import AutoModel
-
     paths = [Path(value).resolve() for value in (args.model, args.vad_model, args.punc_model)]
     for required in paths:
         if not required.is_dir():
             raise FileNotFoundError(required)
-    if torch.cuda.is_available() or getattr(torch.version, "cuda", None) is not None:
-        raise RuntimeError("TASK-002 refuses a CUDA-enabled PyTorch runtime")
-    torch.set_num_threads(4)
-    try:
-        torch.set_num_interop_threads(1)
-    except RuntimeError:
-        pass
-
     def load_model() -> tuple[Any, str]:
-        model = AutoModel(
-            model=str(paths[0]), vad_model=str(paths[1]), punc_model=str(paths[2]),
-            device="cpu", disable_update=True, hub="ms"
-        )
-        return model, getattr(funasr, "__version__", "1.3.22")
+        adapter = ParaformerAdapter(paths[0].parent)
+        return adapter, adapter.runtime_version
 
-    def generate(model: Any, path: str | Path, *, hotword: str | None = None) -> list[dict[str, Any]]:
-        kwargs: dict[str, Any] = {
-            "input": str(Path(path).resolve()),
-            "cache": {},
-            "batch_size_s": 60,
-            "batch_size_threshold_s": 30,
-            "merge_vad": True,
-            "merge_length_s": 15,
-            "sentence_timestamp": True,
-        }
-        if hotword is not None:
-            kwargs["hotword"] = hotword
-        return model.generate(**kwargs)
-
-    def transcribe_factory(model: Any):
+    def transcribe_factory(model: ParaformerAdapter):
         def transcribe(path: str | Path) -> tuple[Any, dict[str, Any]]:
             import wave
 
             with wave.open(str(path), "rb") as handle:
                 duration = handle.getnframes() / handle.getframerate()
-            result = generate(model, path)
-            safe_result = _jsonable(result)
+            safe_result = model.generate_raw(Path(path))
             unified = _build_paraformer_unified(
                 safe_result,
                 duration,
@@ -394,8 +366,8 @@ def main() -> None:
 
         return transcribe
 
-    def extra_probe(model: Any) -> dict[str, Any]:
-        result = _jsonable(generate(model, args.probe_audio, hotword=args.hotwords))
+    def extra_probe(model: ParaformerAdapter) -> dict[str, Any]:
+        result = model.generate_raw(Path(args.probe_audio), hotword=args.hotwords)
         probe_path = Path(args.output_dir).resolve() / "hotword-probe.raw.json"
         atomic_write_json(probe_path, result)
         return {

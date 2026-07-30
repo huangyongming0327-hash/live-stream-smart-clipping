@@ -17,8 +17,8 @@
 - 状态：TASK-002 技术实验阶段正式通过；TASK-002-FIX2-R 最终独立复核评分为 100/100，无阻断问题，不需要 TASK-002-FIX3。
 - Paraformer 整段伪时间戳及 `sentence_info` 条目之间、多个 raw item 之间的非单调漏检均已修复；异常条目会在适配器来源层结构化排除，公共排序不再把这些异常洗成正常 SRT。
 - SenseVoiceSmall/sherpa-onnx INT8 热 RTF 0.02449、峰值 RSS 490.44 MiB；Paraformer/FSMN-VAD/CT-Punc 热 RTF 0.04827、峰值 RSS 5.979 GiB；Faster-Whisper small CPU int8 热 RTF 0.22376、峰值 RSS 655.27 MiB，并提供 3,033 个词级时间戳。
-- 当前准备进入单独的人工准确率审核；无参考字幕，因此 CER/WER 尚未计算，也尚未确定最终生产模型。20 窗口审核包已生成，但人工审核本身尚未执行。
-- 所有 ASR 环境、模型、缓存和结果位于 D 盘并继续被 Git 忽略；基础 `.venv` 未污染；无 CUDA/NVIDIA 包；TASK-003 尚未开始。
+- 20 窗口人工审核和结果分析已经完成；MVP 主模型确定为 Paraformer，低资源备用为 SenseVoice。
+- 所有 ASR 环境、模型、缓存和结果位于 D 盘并继续被 Git 忽略；基础 `.venv` 未污染；无 CUDA/NVIDIA 包。
 
 ## TASK-002-HUMAN-001
 
@@ -37,8 +37,25 @@
 - FIX-LITE已完成最小修复：开始时固定读取JSON和manifest内存快照，全部结果先写同一临时目录，正式替换前复核双输入SHA；输入变化或生成失败会清理临时目录并保留原正式结果。
 - FIX-LITE定向测试35 passed、0 failed；完整source-only为基础110 passed/1 deselected、ASR 91 passed/2 deselected，均0 failed，`pip check`通过。
 - 真实本地聚合临时回归确认统计和决策不变：主模型仍为Paraformer，备用仍为SenseVoice，置信度仍为高。
-- TASK-002尚不能正式关闭：PR #4继续保持Draft，等待FIX-LITE最新head的三项Actions、独立复核和用户手动决定。TASK-003尚未开始。
+- FIX-LITE 独立复核为 94/100、无阻断；PR #4 已由用户合并，merge commit 为
+  `cbdf5632cc53e49ee1477797ba46d07f3fd62d74`，TASK-002 正式关闭。
 - 原始人工JSON、用户备注、实际听写和`local-data/`仍只保存在本地且被Git忽略。
+
+## TASK-003
+
+- 状态：单 MP4 → 分块音频 → 本地 ASR → `timeline.json` / `subtitles.srt` /
+  `transcript.txt` 已完成本地实现、fake adapter 单测和真实验证，等待 Draft PR 三项检查与独立审核。
+- 默认 Paraformer，SenseVoice 为用户手动选择的低资源模式；模型加载和推理均由 socket
+  守卫保持离线，不下载或更新模型。
+- 默认 60 秒顺序分块，每块完成后原子保存 `task_state.json`；真实异常终止验证从
+  3/5 块继续，首块记录哈希不变，最终 5/5 完成。
+- 22.067 秒真实短视频：Paraformer 33.59 秒、峰值工作集约 5.98 GiB；
+  SenseVoice 5.53 秒、约 362.90 MiB。两者 timeline/SRT/TXT 均有效。
+- 827.766 秒较长视频使用 SenseVoice 完成 14/14 块，耗时 38.54 秒、峰值工作集
+  约 408.63 MiB，生成 169 条 timeline/SRT；原视频 SHA-256 未变化。
+- source-only 回归：基础 128 passed/1 deselected、ASR 91 passed/2 deselected，
+  均 0 failed；`pip check` 通过。
+- 真实媒体、模型、字幕、状态、缓存和 `local-data/` 保持 Git 忽略；未执行 TASK-004。
 
 ## TASK-GIT-001
 
@@ -59,7 +76,7 @@
 - 所有公开文本使用 `<PROJECT_ROOT>`、`<USER_HOME>`、`<LOCAL_USER>`、`<LOCAL_MACHINE>`、`<LOCAL_IP>`、`<REDACTED_PATH>` 和 `<REDACTED_EMAIL>` 等占位符脱敏。
 - 公开仓库不包含模型、媒体、虚拟环境、runtime、缓存、日志、运行字幕、密钥或用户数据。
 - 后续开发只允许使用 `task/`、`fix/` 或 `chore/` 分支，并通过 Draft PR、自动检查和独立审核报告流转；不会自动合并。
-- TASK-002 技术阶段已经通过，但人工准确率审核尚未完成，TASK-003 尚未开始。
+- TASK-002 技术与人工选型阶段已经通过；TASK-003 当前通过独立任务分支交付。
 
 ## TASK-GITHUB-002-FIX
 
@@ -120,12 +137,14 @@
 - TASK-000 和 TASK-001 已验收；其原私有基线不进入公开历史。
 - AMF 实际编码初始化失败是已知非阻断限制；精准裁切稳定基线为已通过的 CPU `libx264`。
 - TASK-002 技术实验已由 TASK-002-FIX2-R 以 100/100 最终通过；公开仓库从该已验收快照建立新的干净历史。
-- 20窗口人工听音与结果分析已完成；MVP主模型推荐Paraformer、备用模型推荐SenseVoice，决策为高置信`confirmed_mvp_baseline`。
-- TASK-002-HUMAN-002的发布完整性阻断已由FIX-LITE完成本地修复；PR #4仍等待latest-head Actions和独立复核，尚不能正式关闭；TASK-003尚未开始。
+- 20窗口人工听音与结果分析已完成；MVP主模型为Paraformer、备用模型为SenseVoice，决策为高置信`confirmed_mvp_baseline`。
+- TASK-002-HUMAN-002 的发布完整性阻断已修复并复核；PR #4 已合并，TASK-002 已关闭。
+- TASK-003 已完成本地实现和真实验证，等待 Draft PR 自动检查与独立审核。
 
 ## 建议下一个任务
 
-- 下一步只建议对TASK-002-HUMAN-002-FIX-LITE执行独立复核，重点验证双输入固定快照、发布前双SHA门禁、失败后原结果不变和临时目录清理；复核与用户手动合并前不执行TASK-003。
+- 下一步只建议独立审核 TASK-003，重点检查状态绑定、异常恢复、时间轴无重叠、
+  正式输出发布门禁、两模型真实离线调用和隐私边界；继续禁止 TASK-004。
 
 ## 约束核验
 
@@ -134,4 +153,5 @@
 - TASK-002 只下载公开依赖和官方 ASR 模型到 D 盘；样本、音频、字幕和结果未上传，未调用云端 ASR、收费 API 或 OpenAI API，未写入 API Key；
 - TASK-002-FIX/FIX2 未下载或更新模型、未安装或更新依赖，未修改 SenseVoice/Faster-Whisper 适配器或正式 `src/liveclip`，也未重跑三套全长实验；
 - 原始样本前后 SHA-256 一致；未修改用户或系统 PATH、永久环境变量或电源计划；基础 `.venv` 未污染；未安装 CUDA、GPU PyTorch 或 NVIDIA 包；
-- 未执行人工准确率审核或 TASK-003，未生成正式 `timeline.json`；只创建 TASK-002 技术阶段的本地 commit 和 tag，未创建 remote 或执行 push。
+- TASK-003 真实输入、临时 WAV、正式字幕、状态和模型仍只位于 Git 忽略目录；
+  原视频前后 SHA-256 一致，未调用云端或收费 API，未执行 TASK-004。

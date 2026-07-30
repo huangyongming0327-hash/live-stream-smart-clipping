@@ -1,6 +1,6 @@
 """Project-local FFmpeg media service."""
 
-from .audio import extract_asr_wav
+from .audio import extract_asr_wav, extract_asr_wav_chunk
 from .errors import (
     MediaError,
     MediaFileNotFoundError,
@@ -47,6 +47,7 @@ __all__ = [
     "SyncTolerances",
     "burn_subtitles",
     "extract_asr_wav",
+    "extract_asr_wav_chunk",
     "parse_frame_rate",
     "parse_srt_text",
     "parse_sync_probe_json",
