@@ -33,7 +33,11 @@
 - 完成版JSON SHA-256为`160964ef19b136947663270e6dd401ea801884518a9364c47327ce2158698aef`，分析前后未变化；其`source_manifest_sha256`与真实`review-manifest.json`的`25e7d0a7c116b00b895eea0d5b67aa0ad62ff562c9d8c640685909867a9abf7b`精确匹配。
 - Paraformer在20窗口中明确胜出18次，聚合质量分92.58；SenseVoice胜出2次、49.00；Faster-Whisper胜出0次、40.00。没有难辨认窗口，因此清晰音频子集结果与全量结果一致。
 - MVP推荐主模型为Paraformer，备用模型为SenseVoice；决策状态为`confirmed_mvp_baseline`，置信度为高。
-- TASK-002尚不能正式关闭：当前仍等待本任务Draft PR的三项Actions、独立审核和用户手动合并决定。TASK-003尚未开始。
+- 独立审核评分84/100并发现一个阻断：原实现先写正式结果、后复核输入SHA，输入在输出阶段变化时会留下误导性正式结果。
+- FIX-LITE已完成最小修复：开始时固定读取JSON和manifest内存快照，全部结果先写同一临时目录，正式替换前复核双输入SHA；输入变化或生成失败会清理临时目录并保留原正式结果。
+- FIX-LITE定向测试35 passed、0 failed；完整source-only为基础110 passed/1 deselected、ASR 91 passed/2 deselected，均0 failed，`pip check`通过。
+- 真实本地聚合临时回归确认统计和决策不变：主模型仍为Paraformer，备用仍为SenseVoice，置信度仍为高。
+- TASK-002尚不能正式关闭：PR #4继续保持Draft，等待FIX-LITE最新head的三项Actions、独立复核和用户手动决定。TASK-003尚未开始。
 - 原始人工JSON、用户备注、实际听写和`local-data/`仍只保存在本地且被Git忽略。
 
 ## TASK-GIT-001
@@ -117,11 +121,11 @@
 - AMF 实际编码初始化失败是已知非阻断限制；精准裁切稳定基线为已通过的 CPU `libx264`。
 - TASK-002 技术实验已由 TASK-002-FIX2-R 以 100/100 最终通过；公开仓库从该已验收快照建立新的干净历史。
 - 20窗口人工听音与结果分析已完成；MVP主模型推荐Paraformer、备用模型推荐SenseVoice，决策为高置信`confirmed_mvp_baseline`。
-- TASK-002仍等待TASK-002-HUMAN-002独立审核和PR合并，尚不能正式关闭；TASK-003尚未开始。
+- TASK-002-HUMAN-002的发布完整性阻断已由FIX-LITE完成本地修复；PR #4仍等待latest-head Actions和独立复核，尚不能正式关闭；TASK-003尚未开始。
 
 ## 建议下一个任务
 
-- 下一步只建议对TASK-002-HUMAN-002执行独立审核，重点复核真实manifest绑定、严格键集合、聚合公式、脱敏边界和模型决策；审核与用户手动合并前不执行TASK-003。
+- 下一步只建议对TASK-002-HUMAN-002-FIX-LITE执行独立复核，重点验证双输入固定快照、发布前双SHA门禁、失败后原结果不变和临时目录清理；复核与用户手动合并前不执行TASK-003。
 
 ## 约束核验
 

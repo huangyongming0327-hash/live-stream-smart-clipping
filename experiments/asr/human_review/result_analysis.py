@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
+import os
 from collections import Counter
 from datetime import datetime, timezone
 from decimal import Decimal, ROUND_HALF_UP
 from fractions import Fraction
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any, Iterable, Mapping
 
 from experiments.asr.common import atomic_write_json, atomic_write_text
@@ -94,15 +97,12 @@ def _reject_duplicate_object_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any
     return result
 
 
-def load_json_object(path: str | Path) -> dict[str, Any]:
-    """Read strict UTF-8 JSON while rejecting duplicate keys and non-finite values."""
+def _parse_json_object(data: bytes) -> dict[str, Any]:
+    """Parse a fixed JSON byte snapshot with the strict review rules."""
 
-    source = Path(path)
-    if not source.is_file():
-        raise FileNotFoundError(source)
     try:
         value = json.loads(
-            source.read_text(encoding="utf-8"),
+            data.decode("utf-8"),
             parse_float=Decimal,
             parse_constant=_reject_json_constant,
             object_pairs_hook=_reject_duplicate_object_keys,
@@ -114,6 +114,15 @@ def load_json_object(path: str | Path) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ReviewValidationError("JSON root must be an object")
     return value
+
+
+def load_json_object(path: str | Path) -> dict[str, Any]:
+    """Read strict UTF-8 JSON while rejecting duplicate keys and non-finite values."""
+
+    source = Path(path)
+    if not source.is_file():
+        raise FileNotFoundError(source)
+    return _parse_json_object(source.read_bytes())
 
 
 def _require_exact_keys(value: Mapping[str, Any], expected: set[str], label: str) -> None:
@@ -965,16 +974,18 @@ def run_analysis(
 ) -> dict[str, Any]:
     """Validate, analyze, and atomically publish local/public aggregate outputs."""
 
-    review_path = Path(review_json_path)
-    real_manifest_path = Path(manifest_path)
-    local_dir = Path(local_output_dir)
+    review_path = Path(review_json_path).resolve()
+    real_manifest_path = Path(manifest_path).resolve()
+    local_dir = Path(local_output_dir).resolve()
     metadata_before = _file_metadata(review_path)
-    review_sha_before = sha256_file(review_path)
-    manifest_sha = sha256_file(real_manifest_path)
+    review_snapshot = review_path.read_bytes()
+    manifest_snapshot = real_manifest_path.read_bytes()
+    review_sha_before = hashlib.sha256(review_snapshot).hexdigest()
+    manifest_sha = hashlib.sha256(manifest_snapshot).hexdigest()
 
-    manifest = load_json_object(real_manifest_path)
+    manifest = _parse_json_object(manifest_snapshot)
     expected_windows = validate_manifest(manifest)
-    payload = load_json_object(review_path)
+    payload = _parse_json_object(review_snapshot)
     normalized_rows = validate_completed_review(
         payload,
         expected_windows,
@@ -982,9 +993,6 @@ def run_analysis(
     )
     calculated = analyze_validated_rows(normalized_rows)
 
-    review_sha_after_analysis = sha256_file(review_path)
-    if review_sha_after_analysis != review_sha_before:
-        raise ReviewValidationError("completed review JSON changed during analysis")
     metadata_after_analysis = _file_metadata(review_path)
 
     analysis: dict[str, Any] = {
@@ -999,12 +1007,12 @@ def run_analysis(
             "path": "<LOCAL_COMPLETED_REVIEW_JSON>",
             **metadata_before,
             "sha256_before": review_sha_before,
-            "sha256_after": review_sha_after_analysis,
+            "sha256_after": review_sha_before,
             "size_bytes_after": metadata_after_analysis["size_bytes"],
             "last_write_time_utc_after": metadata_after_analysis[
                 "last_write_time_utc"
             ],
-            "unchanged": review_sha_before == review_sha_after_analysis,
+            "unchanged": True,
         },
         "manifest_integrity": {
             "path": "<LOCAL_REVIEW_OUTPUT>/review-manifest.json",
@@ -1028,28 +1036,75 @@ def run_analysis(
         **calculated,
     }
 
-    local_dir.mkdir(parents=True, exist_ok=True)
-    atomic_write_json(local_dir / "asr-human-review-analysis.json", analysis)
-    atomic_write_text(
-        local_dir / "asr-human-review-analysis.md",
-        render_local_analysis(analysis),
-    )
-    atomic_write_json(
-        local_dir / "asr-production-baseline.json",
-        build_baseline_json(analysis),
-    )
-    if public_result_path is not None:
+    staging_parent = local_dir.parent
+    staging_parent.mkdir(parents=True, exist_ok=True)
+    with TemporaryDirectory(
+        dir=staging_parent,
+        prefix=".result-analysis-",
+    ) as temporary_output_dir:
+        staging_dir = Path(temporary_output_dir)
+        staged_outputs: list[tuple[Path, Path]] = []
+
+        local_analysis_json = staging_dir / "asr-human-review-analysis.json"
+        local_analysis_markdown = staging_dir / "asr-human-review-analysis.md"
+        local_baseline_json = staging_dir / "asr-production-baseline.json"
+        atomic_write_json(local_analysis_json, analysis)
         atomic_write_text(
-            public_result_path,
-            render_human_review_result(analysis),
+            local_analysis_markdown,
+            render_local_analysis(analysis),
         )
-    if public_baseline_path is not None:
-        atomic_write_text(
-            public_baseline_path,
-            render_production_baseline(analysis),
+        atomic_write_json(
+            local_baseline_json,
+            build_baseline_json(analysis),
+        )
+        staged_outputs.extend(
+            (
+                (
+                    local_analysis_json,
+                    local_dir / "asr-human-review-analysis.json",
+                ),
+                (
+                    local_analysis_markdown,
+                    local_dir / "asr-human-review-analysis.md",
+                ),
+                (
+                    local_baseline_json,
+                    local_dir / "asr-production-baseline.json",
+                ),
+            )
         )
 
-    review_sha_final = sha256_file(review_path)
-    if review_sha_final != review_sha_before:
-        raise ReviewValidationError("completed review JSON changed while outputs were written")
+        if public_result_path is not None:
+            staged_public_result = staging_dir / "public-result.md"
+            atomic_write_text(
+                staged_public_result,
+                render_human_review_result(analysis),
+            )
+            staged_outputs.append(
+                (staged_public_result, Path(public_result_path).resolve())
+            )
+        if public_baseline_path is not None:
+            staged_public_baseline = staging_dir / "public-baseline.md"
+            atomic_write_text(
+                staged_public_baseline,
+                render_production_baseline(analysis),
+            )
+            staged_outputs.append(
+                (staged_public_baseline, Path(public_baseline_path).resolve())
+            )
+
+        review_sha_final = sha256_file(review_path)
+        manifest_sha_final = sha256_file(real_manifest_path)
+        if review_sha_final != review_sha_before:
+            raise ReviewValidationError(
+                "completed review JSON changed before result publication"
+            )
+        if manifest_sha_final != manifest_sha:
+            raise ReviewValidationError(
+                "review manifest changed before result publication"
+            )
+
+        for staged_path, target_path in staged_outputs:
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(staged_path, target_path)
     return analysis

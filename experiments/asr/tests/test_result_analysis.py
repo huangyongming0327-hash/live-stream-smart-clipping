@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from experiments.asr.human_review import result_analysis
 from experiments.asr.human_review.result_analysis import (
     ERROR_TAGS,
     MODEL_IDS,
@@ -119,6 +120,38 @@ def _normalized(tmp_path: Path) -> list[dict]:
         expected,
         expected_manifest_sha256=manifest_sha,
     )
+
+
+def _output_paths(tmp_path: Path) -> tuple[Path, Path, list[Path]]:
+    output = tmp_path / "analysis"
+    public_result = tmp_path / "public-result.md"
+    public_baseline = tmp_path / "public-baseline.md"
+    paths = [
+        output / "asr-human-review-analysis.json",
+        output / "asr-human-review-analysis.md",
+        output / "asr-production-baseline.json",
+        public_result,
+        public_baseline,
+    ]
+    return output, public_result, paths
+
+
+def _write_existing_outputs(paths: list[Path]) -> dict[Path, bytes]:
+    originals: dict[Path, bytes] = {}
+    for index, path in enumerate(paths):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        content = f"ORIGINAL-{index}\n".encode()
+        path.write_bytes(content)
+        originals[path] = content
+    return originals
+
+
+def _assert_outputs_unchanged(paths: list[Path], originals: dict[Path, bytes]) -> None:
+    assert {path: path.read_bytes() for path in paths} == originals
+
+
+def _assert_no_staging_directories(tmp_path: Path) -> None:
+    assert list(tmp_path.glob(".result-analysis-*")) == []
 
 
 def _mutated_validation(
@@ -480,6 +513,160 @@ def test_local_outputs_are_deterministic(tmp_path: Path) -> None:
 
     assert [_sha(path) for path in files] == first_hashes
     assert first["decision"] == second["decision"]
+
+
+def test_normal_output_publication_succeeds(tmp_path: Path) -> None:
+    review_path, manifest_path, _ = _files(tmp_path)
+    output, public_result, paths = _output_paths(tmp_path)
+    public_baseline = paths[-1]
+
+    analysis = run_analysis(
+        review_path,
+        manifest_path,
+        output,
+        public_result_path=public_result,
+        public_baseline_path=public_baseline,
+    )
+
+    assert all(path.is_file() for path in paths)
+    assert analysis["source_integrity"]["unchanged"] is True
+    _assert_no_staging_directories(tmp_path)
+
+
+def test_review_change_before_publication_preserves_existing_outputs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    review_path, manifest_path, review = _files(tmp_path)
+    output, public_result, paths = _output_paths(tmp_path)
+    originals = _write_existing_outputs(paths)
+    original_renderer = result_analysis.render_production_baseline
+
+    def mutate_review(analysis: dict) -> str:
+        review["windows"][0]["notes"] = "changed during staged generation"
+        _write_json(review_path, review)
+        return original_renderer(analysis)
+
+    monkeypatch.setattr(
+        result_analysis,
+        "render_production_baseline",
+        mutate_review,
+    )
+
+    with pytest.raises(
+        ReviewValidationError,
+        match="completed review JSON changed before result publication",
+    ):
+        run_analysis(
+            review_path,
+            manifest_path,
+            output,
+            public_result_path=public_result,
+            public_baseline_path=paths[-1],
+        )
+
+    _assert_outputs_unchanged(paths, originals)
+    _assert_no_staging_directories(tmp_path)
+
+
+def test_manifest_change_before_publication_preserves_existing_outputs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    review_path, manifest_path, _ = _files(tmp_path)
+    output, public_result, paths = _output_paths(tmp_path)
+    originals = _write_existing_outputs(paths)
+    original_renderer = result_analysis.render_production_baseline
+
+    def mutate_manifest(analysis: dict) -> str:
+        manifest_path.write_bytes(manifest_path.read_bytes() + b"\n")
+        return original_renderer(analysis)
+
+    monkeypatch.setattr(
+        result_analysis,
+        "render_production_baseline",
+        mutate_manifest,
+    )
+
+    with pytest.raises(
+        ReviewValidationError,
+        match="review manifest changed before result publication",
+    ):
+        run_analysis(
+            review_path,
+            manifest_path,
+            output,
+            public_result_path=public_result,
+            public_baseline_path=paths[-1],
+        )
+
+    _assert_outputs_unchanged(paths, originals)
+    _assert_no_staging_directories(tmp_path)
+
+
+def test_generation_failure_preserves_outputs_and_removes_staging_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    review_path, manifest_path, _ = _files(tmp_path)
+    output, public_result, paths = _output_paths(tmp_path)
+    originals = _write_existing_outputs(paths)
+
+    def fail_render(_: dict) -> str:
+        raise RuntimeError("injected generation failure")
+
+    monkeypatch.setattr(
+        result_analysis,
+        "render_production_baseline",
+        fail_render,
+    )
+
+    with pytest.raises(RuntimeError, match="injected generation failure"):
+        run_analysis(
+            review_path,
+            manifest_path,
+            output,
+            public_result_path=public_result,
+            public_baseline_path=paths[-1],
+        )
+
+    _assert_outputs_unchanged(paths, originals)
+    _assert_no_staging_directories(tmp_path)
+
+
+def test_staged_publication_keeps_model_statistics_and_decision(
+    tmp_path: Path,
+) -> None:
+    review_path, manifest_path, _ = _files(tmp_path)
+
+    analysis = run_analysis(review_path, manifest_path, tmp_path / "analysis")
+    all_windows = analysis["subsets"]["all_windows"]
+
+    assert all_windows["models"]["sensevoice"]["explicit_win_count"] == 20
+    assert (
+        all_windows["models"]["sensevoice"]["quality_scores"][
+            "aggregate_quality_score_exact"
+        ]
+        == "100/1"
+    )
+    assert (
+        all_windows["models"]["paraformer"]["quality_scores"][
+            "aggregate_quality_score_exact"
+        ]
+        == "130/3"
+    )
+    decision = analysis["decision"]
+    assert decision["primary_model"] == "sensevoice"
+    assert decision["fallback_model"] == "paraformer"
+    assert decision["decision_confidence"] == "high"
+    assert decision["decision_status"] == "confirmed_mvp_baseline"
+    assert decision["first_to_second_aggregate_lead_exact"] == "170/3"
+    assert decision["mean_severity_not_worse"] is True
+    assert decision["severity_3_count_not_more"] is True
+    assert decision["winner_points_not_lower"] is True
+    assert decision["clear_subset_winner_conflict"] is False
+    assert decision["supplemental_targeted_windows_recommended"] is False
+    assert decision["supplemental_targeted_window_count"] is None
 
 
 def test_original_review_hash_is_unchanged(tmp_path: Path) -> None:
