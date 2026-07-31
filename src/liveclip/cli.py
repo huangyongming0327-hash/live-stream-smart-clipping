@@ -1,4 +1,4 @@
-"""One public command for local MP4 transcription."""
+"""Public commands for local transcription and semantic analysis."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 from typing import Sequence
 
+from .analysis import AnalysisError, run_analysis
 from .asr.pipeline import ASRPipelineError, StateFileError, run_transcription
 from .media import MediaError
 
@@ -54,6 +55,15 @@ def build_parser() -> argparse.ArgumentParser:
     transcribe.add_argument(
         "--asr-python",
         help="Optional engine-specific Python interpreter override.",
+    )
+    analyze = commands.add_parser(
+        "analyze",
+        help="Generate topics and highlight candidates from one completed timeline.",
+    )
+    analyze.add_argument("--timeline", required=True, help="One completed timeline.json.")
+    analyze.add_argument(
+        "--output",
+        help="Output directory (default: beside timeline.json).",
     )
     return parser
 
@@ -168,6 +178,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     effective_argv = list(sys.argv[1:] if argv is None else argv)
     parser = build_parser()
     args = parser.parse_args(effective_argv)
+    if args.command == "analyze":
+        try:
+            run_analysis(args.timeline, output_dir=args.output)
+            return 0
+        except KeyboardInterrupt:
+            print("失败: 分析已中断；下次运行将从最近完成窗口继续。", file=sys.stderr)
+            return 130
+        except (AnalysisError, OSError, ValueError) as exc:
+            print(f"失败: {exc}", file=sys.stderr)
+            return 1
+
     if args.command != "transcribe":
         parser.error("Unsupported command.")
     assets_root = _assets_root(args.assets_root)
