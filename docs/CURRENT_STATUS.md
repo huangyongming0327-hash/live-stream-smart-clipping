@@ -61,8 +61,9 @@
 ## TASK-004
 
 - 状态：单 timeline 顺序语义分析、fake HTTP client 单测、真实 timeline 离线贯通、
-  中断恢复、最近 3 版本、真实文本模型 API 验证和最终 source-only 已完成；等待
-  Draft PR 三项检查与独立审核。
+  中断恢复、最近 3 版本、真实文本模型 API 验证和最终 source-only 已完成；独立审计
+  89/100、无阻断，PR #6 已合并，merge commit 为
+  `a1e8921abb8d43d289e28282ef63e058b86e6470`。
 - CLI 为 `python -m liveclip analyze --timeline "<PATH>\timeline.json"`；只支持一个
   用户配置的 OpenAI-compatible Chat Completions HTTPS 接口，不安装厂商 SDK，不自动
   切换或比较模型。
@@ -86,6 +87,27 @@
   人工审核，不把模型推荐标记视为直接发布许可。
 - 真实视频、音频、timeline、analysis、state、字幕、API Key 和 `local-data/` 不进入
   Git；离线 fake-client 结果不冒充真实 API 或候选质量证据。
+
+## TASK-005
+
+- 状态：单视频本地候选审核、浏览器预览、毫秒级入出点调整、明确人工确认、单片段
+  MP4/SRT 导出、`review_current.json` 和真实媒体验证已完成；等待 Draft PR 三项检查与
+  独立审核。
+- CLI 为 `python -m liveclip review --video ... --timeline ... --analysis ...`，可选
+  `--output`；只绑定一个相互匹配的视频、timeline 和 analysis。
+- 标准库临时服务只监听 `127.0.0.1`，页面、session、媒体 Range 和导出 API 使用运行时
+  随机 token；页面资源全在项目内，不加载 CDN 或第三方脚本。
+- 候选全部默认“待审核”；导出按钮默认禁用，只有用户明确勾选人工预览确认并提交合法
+  的 1—180 秒范围后，服务端才执行一次导出。
+- FFmpeg 使用 `libx264`、`veryfast`、CRF 20、AAC 160k 与 faststart；临时 MP4 通过
+  ffprobe 的 H.264/AAC 和时长校验后才与 timeline 派生 SRT 一起无覆盖发布，最后原子
+  替换 review。任何失败都不生成 completed review。
+- 真实 827.766 秒输入显示 6 个候选；一个候选从 51.776 秒人工调整为 51.276 秒，导出
+  约 18.573 秒，MP4 为 27,639,402 bytes，ffprobe 为 51.321 秒、H.264/AAC；14 条 SRT
+  从 0 开始并与 timeline 裁剪结果一致。导出视频在浏览器中播放无解码错误。
+- 原视频、timeline 和 analysis 前后 SHA-256 完全一致；浏览器硬关闭后服务在心跳超时内
+  停止且没有残留 Python 审核进程。真实输入、review、MP4、SRT 和运行状态继续被 Git
+  忽略。
 
 ## TASK-GIT-001
 
@@ -169,13 +191,13 @@
 - TASK-002 技术实验已由 TASK-002-FIX2-R 以 100/100 最终通过；公开仓库从该已验收快照建立新的干净历史。
 - 20窗口人工听音与结果分析已完成；MVP主模型为Paraformer、备用模型为SenseVoice，决策为高置信`confirmed_mvp_baseline`。
 - TASK-002-HUMAN-002 的发布完整性阻断已修复并复核；PR #4 已合并，TASK-002 已关闭。
-- TASK-003 已通过独立审核并合并；其非阻断 backlog 未在 TASK-004 顺手修复。
-- TASK-004 已完成真实 API 验证和候选人工抽查，等待 Draft PR 三项检查与独立审核。
+- TASK-003 已通过独立审核并合并；其非阻断 backlog 未在 TASK-004 或 TASK-005 顺手修复。
+- TASK-004 已通过独立审核并合并；其候选在 TASK-005 中仍全部默认待审核。
+- TASK-005 本地实现、自动测试和真实验证已完成，等待 Draft PR 三项检查与独立审核。
 
 ## 建议下一步
 
-- 下一步只继续 TASK-004 的最终发布检查、Draft PR 三项 Actions 和独立审核交接；
-  继续禁止 TASK-005。
+- 下一步只继续 TASK-005 的 Draft PR 三项 Actions 和独立审核交接；继续禁止 TASK-006。
 
 ## 约束核验
 
@@ -187,5 +209,6 @@
 - TASK-003 真实输入、临时 WAV、正式字幕、状态和模型仍只位于 Git 忽略目录；
   原视频前后 SHA-256 一致，TASK-004 未读取或上传视频和音频；
 - TASK-004 真实请求只发送必要字幕字段，视频和音频未发送；API Key 未进入请求正文、
-  状态、日志、结果、报告或 Git；真实 timeline/analysis/state 均未上传，未执行
-  TASK-005。
+  状态、日志、结果、报告或 Git；真实 timeline/analysis/state 均未上传；
+- TASK-005 没有向互联网发送视频、字幕或审核数据；原视频、timeline 和 analysis 未修改，
+  真实 review、导出 MP4/SRT、运行数据和项目本地 FFmpeg 均未上传；未执行 TASK-006。

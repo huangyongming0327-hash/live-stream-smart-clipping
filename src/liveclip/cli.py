@@ -1,4 +1,4 @@
-"""Public commands for local transcription and semantic analysis."""
+"""Public commands for transcription, analysis, and local review."""
 
 from __future__ import annotations
 
@@ -12,6 +12,8 @@ from typing import Sequence
 from .analysis import AnalysisError, run_analysis
 from .asr.pipeline import ASRPipelineError, StateFileError, run_transcription
 from .media import MediaError
+from .review.schema import ReviewError
+from .review.server import launch_review
 
 
 def project_root() -> Path:
@@ -64,6 +66,21 @@ def build_parser() -> argparse.ArgumentParser:
     analyze.add_argument(
         "--output",
         help="Output directory (default: beside timeline.json).",
+    )
+    review = commands.add_parser(
+        "review",
+        help="Review candidates locally and export one confirmed MP4 and SRT.",
+    )
+    review.add_argument("--video", required=True, help="One source .mp4 file.")
+    review.add_argument("--timeline", required=True, help="Its completed timeline.json.")
+    review.add_argument(
+        "--analysis",
+        required=True,
+        help="Its completed current_analysis.json.",
+    )
+    review.add_argument(
+        "--output",
+        help="Export directory (default: <video_stem>_exports beside the MP4).",
     )
     return parser
 
@@ -186,6 +203,23 @@ def main(argv: Sequence[str] | None = None) -> int:
             print("失败: 分析已中断；下次运行将从最近完成窗口继续。", file=sys.stderr)
             return 130
         except (AnalysisError, OSError, ValueError) as exc:
+            print(f"失败: {exc}", file=sys.stderr)
+            return 1
+
+    if args.command == "review":
+        try:
+            launch_review(
+                args.video,
+                args.timeline,
+                args.analysis,
+                output_dir=args.output,
+            )
+            print("审核服务已停止。")
+            return 0
+        except KeyboardInterrupt:
+            print("审核服务已停止。", file=sys.stderr)
+            return 130
+        except (ReviewError, OSError, ValueError) as exc:
             print(f"失败: {exc}", file=sys.stderr)
             return 1
 
