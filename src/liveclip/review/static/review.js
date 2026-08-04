@@ -90,9 +90,17 @@ function updateControls() {
 }
 
 function setRange(startMs, endMs) {
+  elements.confirmExport.checked = false;
   state.startMs = Math.round(startMs);
   state.endMs = Math.round(endMs);
   updateControls();
+}
+
+function exportDetailsMessage(exported, prefix) {
+  if (!exported) return "";
+  return `${prefix} MP4：${exported.video_file_name}；SRT：${exported.subtitle_file_name}；` +
+    `最终范围：${formatClock(exported.final_start_ms)} – ${formatClock(exported.final_end_ms)}；` +
+    `实际时长：${seconds(exported.duration_ms)} 秒；输出文件夹：${exported.output_folder_name}。`;
 }
 
 function makeText(className, text) {
@@ -147,7 +155,9 @@ function selectCandidate(candidateId) {
   setRange(state.selected.original_start_ms, state.selected.original_end_ms);
   elements.video.pause();
   elements.video.currentTime = state.startMs / 1000;
-  elements.exportMessage.textContent = "";
+  elements.exportMessage.textContent = state.session.completed_export
+    ? exportDetailsMessage(state.session.completed_export, "此前已导出。")
+    : "";
 }
 
 async function loadSession() {
@@ -240,9 +250,9 @@ elements.exportButton.addEventListener("click", async () => {
     });
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.error || "导出失败。");
-    const message = payload.subtitle_count === 0 ? `${payload.message}` : `${payload.message} 字幕 ${payload.subtitle_count} 条。`;
+    const subtitleMessage = payload.subtitle_count === 0 ? "该范围没有字幕。" : `字幕 ${payload.subtitle_count} 条。`;
     await loadSession();
-    elements.exportMessage.textContent = message;
+    elements.exportMessage.textContent = `${exportDetailsMessage(payload, payload.message)} ${subtitleMessage}`;
   } catch (error) {
     elements.exportMessage.textContent = error.message || "导出失败。";
   } finally {

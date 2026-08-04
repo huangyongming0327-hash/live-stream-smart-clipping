@@ -47,6 +47,19 @@ class ReviewInputs:
     has_audio: bool
 
 
+@dataclass(frozen=True, slots=True)
+class CompletedExport:
+    """Display-safe details from one valid completed review."""
+
+    candidate_id: str
+    video_file_name: str
+    subtitle_file_name: str
+    final_start_ms: int
+    final_end_ms: int
+    duration_ms: int
+    output_folder_name: str
+
+
 ProbeFunction = Callable[..., MediaProbe]
 
 
@@ -208,6 +221,73 @@ def find_candidate(inputs: ReviewInputs, candidate_id: Any) -> dict[str, Any]:
     raise ReviewError("所选候选不存在。")
 
 
+def load_completed_export(inputs: ReviewInputs) -> CompletedExport | None:
+    """Return a matching completed export without trusting arbitrary paths."""
+
+    if not inputs.review_path.is_file():
+        return None
+    try:
+        payload = json.loads(inputs.review_path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict) or payload.get("schema_version") != "1.0":
+            return None
+        source = payload["source"]
+        review = payload["review"]
+        export = payload["export"]
+        if (
+            not isinstance(source, dict)
+            or not isinstance(review, dict)
+            or not isinstance(export, dict)
+            or source.get("video_file_name") != inputs.video_path.name
+            or source.get("timeline_file_name") != inputs.timeline_path.name
+            or source.get("timeline_sha256") != inputs.timeline_sha256
+            or source.get("analysis_file_name") != inputs.analysis_path.name
+            or source.get("analysis_sha256") != inputs.analysis_sha256
+            or review.get("approved") is not True
+            or export.get("completed") is not True
+        ):
+            return None
+        candidate = find_candidate(inputs, review.get("candidate_id"))
+        start_ms = review.get("final_start_ms")
+        end_ms = review.get("final_end_ms")
+        validate_clip_range(start_ms, end_ms, inputs.video_duration_ms)
+        if (
+            review.get("original_start_ms") != candidate["start_ms"]
+            or review.get("original_end_ms") != candidate["end_ms"]
+        ):
+            return None
+        video_name = export.get("video_file_name")
+        subtitle_name = export.get("subtitle_file_name")
+        if (
+            not isinstance(video_name, str)
+            or not video_name
+            or Path(video_name).name != video_name
+            or not isinstance(subtitle_name, str)
+            or not subtitle_name
+            or Path(subtitle_name).name != subtitle_name
+            or not (inputs.output_dir / video_name).is_file()
+            or not (inputs.output_dir / subtitle_name).is_file()
+        ):
+            return None
+        return CompletedExport(
+            candidate_id=candidate["id"],
+            video_file_name=video_name,
+            subtitle_file_name=subtitle_name,
+            final_start_ms=start_ms,
+            final_end_ms=end_ms,
+            duration_ms=end_ms - start_ms,
+            output_folder_name=inputs.output_dir.name or "exports",
+        )
+    except (
+        OSError,
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+        KeyError,
+        TypeError,
+        ReviewError,
+    ):
+        return None
+
+
 def _risk_text(candidate: dict[str, Any]) -> str:
     penalty = candidate["risk_penalty"]
     if penalty:
@@ -219,7 +299,13 @@ def build_session_payload(
     inputs: ReviewInputs,
     *,
     exported_candidate_id: str | None = None,
+    completed_export: CompletedExport | None = None,
 ) -> dict[str, Any]:
+    completed_candidate_id = (
+        completed_export.candidate_id
+        if completed_export is not None
+        else exported_candidate_id
+    )
     candidates = []
     for rank, candidate in enumerate(inputs.analysis["candidates"], start=1):
         candidates.append(
@@ -232,7 +318,7 @@ def build_session_payload(
                 "reason": candidate["reason"],
                 "risk": _risk_text(candidate),
                 "review_status": (
-                    "已导出" if candidate["id"] == exported_candidate_id else "待审核"
+                    "已导出" if candidate["id"] == completed_candidate_id else "待审核"
                 ),
                 "original_start_ms": candidate["start_ms"],
                 "original_end_ms": candidate["end_ms"],
@@ -245,5 +331,18 @@ def build_session_payload(
             "duration_ms": inputs.video_duration_ms,
         },
         "candidates": candidates,
-        "export_completed": exported_candidate_id is not None,
+        "export_completed": completed_candidate_id is not None,
+        "completed_export": (
+            {
+                "candidate_id": completed_export.candidate_id,
+                "video_file_name": completed_export.video_file_name,
+                "subtitle_file_name": completed_export.subtitle_file_name,
+                "final_start_ms": completed_export.final_start_ms,
+                "final_end_ms": completed_export.final_end_ms,
+                "duration_ms": completed_export.duration_ms,
+                "output_folder_name": completed_export.output_folder_name,
+            }
+            if completed_export is not None
+            else None
+        ),
     }
