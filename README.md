@@ -7,8 +7,9 @@ LiveClip 是一个 Windows 本地优先的技术验证项目，目标是把长�
 - TASK-000 数据契约、TASK-001 FFmpeg 媒体链路和 TASK-002 本地 ASR
   选型已经通过对应审核。
 - TASK-003 的单 MP4 本地分块转写生产流程已合并。
-- TASK-004 已实现单个 timeline 的顺序语义分析，并使用用户配置的低成本文本模型完成
-  一份真实 827.766 秒 timeline 验证；候选仍需人工审核后才能进入后续剪辑。
+- TASK-004 的单 timeline 顺序语义分析与候选生成已合并；模型推荐必须继续经过人工审核。
+- TASK-005 已实现本地候选审核页面、原视频预览、毫秒级入出点调整，以及明确确认后的
+  单片段 H.264 + AAC MP4 和独立 SRT 导出。
 - 项目仍处于开发和技术验证阶段，尚无正式一键安装版本。
 - MVP 默认模型为 Paraformer，用户可手动选择低资源 SenseVoice。
 
@@ -96,8 +97,30 @@ analysis_history/
 音频、本地路径和 API Key 不会进入请求正文。时间、原句、总分、过滤和重叠去重均由
 程序根据真实 timeline 计算。
 
-当前不支持 GUI、批量任务、队列、模型下载/自动切换、说话人分离、翻译、候选审核、
-视频导出或 TASK-005。
+## 单次候选审核与导出
+
+准备相互匹配的原视频、已完成 timeline 和已完成 analysis 后运行：
+
+```powershell
+python -m liveclip review `
+  --video "<PATH>\source.mp4" `
+  --timeline "<PATH>\timeline.json" `
+  --analysis "<PATH>\current_analysis.json" `
+  --output "<OPTIONAL_OUTPUT_DIR>"
+```
+
+命令只在 `127.0.0.1` 启动带随机访问 token 的临时服务，并自动打开默认浏览器。页面左侧
+列出全部待审核候选，右侧使用浏览器原生视频控件预览，可用滑块、数字输入和微调按钮修改
+开始/结束时间。AI 排名、分数和 `recommended` 都不会自动批准候选；只有勾选“我已人工预览
+并确认导出这个片段”后，服务端才接受一次导出。
+
+未提供 `--output` 时，MP4 和 SRT 写入原视频旁的 `<视频名>_exports`。输出采用 H.264 +
+AAC，SRT 直接从 timeline 裁剪并平移到从 0 开始；成功后在 analysis 同级目录原子写入
+`review_current.json`。既有同名输出不会被覆盖，原视频、timeline 和 analysis 不会被修改。
+视频、字幕和审核数据不会发送到互联网，页面也不加载第三方资源。
+
+预览只支持当前浏览器能够直接解码的 MP4，本版本不生成代理。当前也不支持批量或多片段
+导出、拼接、波形、缩略图、字幕烧录、竖屏转换、队列、自动发布、安装包或 TASK-006。
 
 ## 开发检查
 

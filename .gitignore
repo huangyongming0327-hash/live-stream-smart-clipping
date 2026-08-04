@@ -91,6 +91,10 @@ current_analysis.json
 analysis_history/
 .analysis_work/
 
+# Local candidate review and clip export output
+review_current.json
+*_exports/
+
 # Large model and checkpoint formats
 *.bin
 *.safetensors

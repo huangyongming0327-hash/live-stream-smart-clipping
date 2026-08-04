@@ -1,0 +1,107 @@
+:root {
+  color-scheme: light;
+  font-family: "Microsoft YaHei", "Segoe UI", sans-serif;
+  color: #172033;
+  background: #eef2f7;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  min-width: 320px;
+  background: #eef2f7;
+}
+
+button, input { font: inherit; }
+
+button:focus-visible, input:focus-visible, video:focus-visible {
+  outline: 3px solid #ff8a3d;
+  outline-offset: 2px;
+}
+
+.page-header {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 26px 32px 20px;
+  background: #172033;
+  color: white;
+}
+
+h1, h2, p { margin-top: 0; }
+h1 { margin-bottom: 0; font-size: clamp(22px, 3vw, 32px); }
+h2 { margin-bottom: 0; font-size: 20px; }
+.eyebrow { margin-bottom: 6px; color: #f7aa72; font-size: 12px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
+.source-name { margin: 0; color: #cdd6e5; text-align: right; overflow-wrap: anywhere; }
+
+.review-layout {
+  display: grid;
+  grid-template-columns: minmax(270px, 360px) minmax(0, 1fr);
+  gap: 20px;
+  max-width: 1480px;
+  margin: 0 auto;
+  padding: 20px;
+}
+
+.candidate-panel, .preview-panel {
+  border: 1px solid #d5dce7;
+  border-radius: 14px;
+  background: white;
+  box-shadow: 0 8px 24px rgba(23, 32, 51, .07);
+}
+
+.candidate-panel { padding: 18px; max-height: calc(100vh - 132px); overflow: auto; }
+.preview-panel { padding: 20px; }
+.panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
+.count-badge, .status-badge { border-radius: 999px; padding: 5px 10px; background: #edf1f7; font-size: 13px; font-weight: 700; }
+
+.candidate-list { display: grid; gap: 10px; margin: 0; padding: 0; list-style: none; }
+.candidate-card {
+  width: 100%;
+  border: 1px solid #d8dee8;
+  border-radius: 10px;
+  padding: 14px;
+  background: #fff;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.candidate-card:hover { border-color: #65728a; }
+.candidate-card.selected { border-color: #e66b20; box-shadow: inset 4px 0 #e66b20; background: #fff9f5; }
+.candidate-top { display: flex; justify-content: space-between; gap: 10px; font-weight: 700; }
+.candidate-title { margin: 8px 0; font-size: 16px; }
+.candidate-meta, .candidate-reason, .candidate-risk, .candidate-status { margin: 6px 0 0; font-size: 13px; line-height: 1.5; }
+.candidate-risk { color: #9a4e1a; }
+.candidate-status { font-weight: 700; }
+.empty-state { padding: 18px; border-radius: 8px; background: #f4f6f9; color: #526078; }
+
+video { display: block; width: 100%; max-height: 58vh; border-radius: 10px; background: #090d14; }
+.time-summary { display: flex; justify-content: space-between; gap: 16px; margin: 12px 0 18px; color: #526078; }
+.trim-controls { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.time-control { padding: 14px; border: 1px solid #d8dee8; border-radius: 10px; }
+.control-title { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-weight: 700; }
+.control-title input { width: 132px; padding: 7px 9px; border: 1px solid #aeb8c8; border-radius: 7px; }
+input[type="range"] { width: 100%; margin: 15px 0; accent-color: #e66b20; }
+.nudge-row, .action-row { display: flex; flex-wrap: wrap; gap: 8px; }
+button { border: 0; border-radius: 8px; padding: 9px 12px; cursor: pointer; }
+button:disabled { cursor: not-allowed; opacity: .45; }
+.nudge-row button, .secondary { border: 1px solid #bdc6d4; background: #f7f9fc; color: #27344c; }
+.error-message { min-height: 22px; margin: 12px 0; color: #a32626; }
+.confirmation-box { margin: 18px 0 14px; padding: 15px; border: 1px solid #f0c39f; border-radius: 10px; background: #fff8f1; }
+.confirmation-box label { display: flex; align-items: flex-start; gap: 9px; font-weight: 700; }
+.confirmation-box input { margin-top: 4px; }
+.confirmation-box p { margin: 10px 0 0 25px; color: #6f4a2c; font-size: 13px; line-height: 1.55; }
+.export-button { width: 100%; padding: 13px; background: #d95b12; color: white; font-weight: 800; }
+.export-button:not(:disabled):hover { background: #b94707; }
+.export-message { min-height: 24px; margin: 12px 0 0; font-weight: 700; }
+
+@media (max-width: 860px) {
+  .page-header { align-items: flex-start; flex-direction: column; padding: 22px; }
+  .source-name { text-align: left; }
+  .review-layout { grid-template-columns: 1fr; padding: 12px; }
+  .candidate-panel { max-height: none; }
+  .trim-controls { grid-template-columns: 1fr; }
+  .time-summary { flex-direction: column; gap: 6px; }
+}

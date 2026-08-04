@@ -199,8 +199,8 @@
 
 ## D-0026｜TASK-004 顺序语义分段与爆点候选
 
-- 状态：实现、fake HTTP client 单测、真实 timeline 离线贯通和 `qwen-flash` 真实
-  API 验证已完成；等待 Draft PR 三项检查与独立审核。
+- 状态：已接受；独立审计 89/100、无阻断，PR #6 已合并，merge commit 为
+  `a1e8921abb8d43d289e28282ef63e058b86e6470`。
 - 接口决策：只支持一个用户配置的 OpenAI-compatible Chat Completions HTTPS 地址，
   使用 Python 标准库 HTTP，不安装厂商 SDK、不路由或自动切换模型。API Key 只从
   环境变量读取，不进入请求正文、状态、日志或 Git。
@@ -221,3 +221,24 @@
   基本合理但隐私风险扣分偏低，因此后续仍必须保留人工审核门禁。
 - 原因：该边界形成最小可恢复语义分析闭环，同时保持用户媒体、本地路径和凭据不离开
   本机，也避免为单 timeline 技术验证引入 Agent、插件、数据库、RAG 或工作流引擎。
+
+## D-0027｜TASK-005 本地审核与单片段导出
+
+- 状态：本地实现、自动测试和真实媒体验证完成；等待 Draft PR 三项检查与独立审核。
+- 输入决策：一次只绑定一个 MP4、一个 completed timeline 和一个 completed analysis；
+  文件名、视频 SHA、时长、timeline SHA、candidate 范围与 schema 全部在页面启动前校验。
+  原视频、timeline 和 analysis 始终只读，不因调整写回 analysis。
+- 审核决策：所有 AI 候选默认“待审核”，首项只可默认选中用于预览；分数、排名和
+  `recommended` 均不代表批准。只有服务端收到严格布尔 `confirmed=true` 和合法的
+  1—180 秒最终范围后才允许一次导出。
+- 页面与服务决策：使用标准库 `ThreadingHTTPServer` 和项目内原生 HTML/CSS/JavaScript，
+  仅绑定 `127.0.0.1`，页面、session、单一媒体文件、导出与停止 API 使用随机 token。
+  媒体端点支持单范围请求；页面生命周期事件与心跳超时共同停止服务，不建设常驻后台。
+- 导出决策：使用现有 FFmpeg 精确重编码 H.264 + AAC，不提供 stream copy 或 GPU 分支；
+  MP4 与 timeline 派生 SRT 先写临时文件，ffprobe 校验后无覆盖发布，最后才原子替换
+  `review_current.json`。失败回滚本次正式输出并保留旧 review；电池供电不暂停。
+- 产品边界：浏览器无法直接解码的 MP4 只提示兼容限制，不生成代理；不做批量、多片段
+  拼接、波形、缩略图、字幕烧录、竖屏、队列、自动发布、TASK-003/TASK-004 backlog 或
+  TASK-006。
+- 原因：该边界以最小本地页面补齐“AI 候选必须人工预览与确认”的安全门禁，同时让
+  输出可回溯、失败不伪完成，并避免把首版扩大为通用剪辑器或长期 Web 服务。

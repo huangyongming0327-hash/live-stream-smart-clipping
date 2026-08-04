@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LiveClip 候选审核</title>
+  <link rel="stylesheet" href="/static/review.css">
+  <script src="/static/review.js" defer></script>
+</head>
+<body>
+  <header class="page-header">
+    <div>
+      <p class="eyebrow">LiveClip 本地审核</p>
+      <h1>候选审核与单片段导出</h1>
+    </div>
+    <p id="sourceName" class="source-name">正在读取本地输入…</p>
+  </header>
+
+  <main class="review-layout">
+    <aside class="candidate-panel" aria-labelledby="candidateHeading">
+      <div class="panel-heading">
+        <h2 id="candidateHeading">候选列表</h2>
+        <span id="candidateCount" class="count-badge">0</span>
+      </div>
+      <p id="emptyCandidates" class="empty-state" hidden>当前 analysis 没有候选，不会伪造候选。</p>
+      <ol id="candidateList" class="candidate-list"></ol>
+    </aside>
+
+    <section class="preview-panel" aria-labelledby="previewHeading">
+      <div class="panel-heading">
+        <div>
+          <p class="eyebrow">当前候选</p>
+          <h2 id="previewHeading">请选择候选</h2>
+        </div>
+        <span id="reviewStatus" class="status-badge">待审核</span>
+      </div>
+
+      <video id="video" controls preload="metadata">
+        当前浏览器不支持原生 MP4 播放。
+      </video>
+      <p id="videoError" class="error-message" hidden>浏览器无法播放当前 MP4 编码。本版本不会生成预览代理。</p>
+
+      <div class="time-summary" aria-live="polite">
+        <span>当前时间 <strong id="currentTime">00:00.000</strong></span>
+        <span>片段时长 <strong id="clipDuration">0.000 秒</strong></span>
+      </div>
+
+      <div class="trim-controls">
+        <section class="time-control" aria-labelledby="startLabel">
+          <div class="control-title">
+            <label id="startLabel" for="startNumber">开始时间（秒）</label>
+            <input id="startNumber" type="number" min="0" step="0.001" disabled>
+          </div>
+          <input id="startSlider" type="range" min="0" step="0.001" disabled>
+          <div class="nudge-row" data-target="start">
+            <button type="button" data-delta="-1" disabled>-1秒</button>
+            <button type="button" data-delta="-0.1" disabled>-0.1秒</button>
+            <button type="button" data-delta="0.1" disabled>+0.1秒</button>
+            <button type="button" data-delta="1" disabled>+1秒</button>
+          </div>
+        </section>
+
+        <section class="time-control" aria-labelledby="endLabel">
+          <div class="control-title">
+            <label id="endLabel" for="endNumber">结束时间（秒）</label>
+            <input id="endNumber" type="number" min="0" step="0.001" disabled>
+          </div>
+          <input id="endSlider" type="range" min="0" step="0.001" disabled>
+          <div class="nudge-row" data-target="end">
+            <button type="button" data-delta="-1" disabled>-1秒</button>
+            <button type="button" data-delta="-0.1" disabled>-0.1秒</button>
+            <button type="button" data-delta="0.1" disabled>+0.1秒</button>
+            <button type="button" data-delta="1" disabled>+1秒</button>
+          </div>
+        </section>
+      </div>
+
+      <p id="rangeError" class="error-message" aria-live="polite"></p>
+      <div class="action-row">
+        <button id="resetRange" type="button" class="secondary" disabled>恢复AI推荐范围</button>
+        <button id="previewRange" type="button" class="secondary" disabled>预览调整后片段</button>
+      </div>
+
+      <div class="confirmation-box">
+        <label>
+          <input id="confirmExport" type="checkbox" disabled>
+          我已人工预览并确认导出这个片段
+        </label>
+        <p>AI评分和风险判断仅供参考，发布前仍需人工复核内容、营销表述、隐私和健康风险。</p>
+      </div>
+
+      <button id="exportButton" type="button" class="export-button" disabled>导出一个 MP4 和 SRT</button>
+      <p id="exportMessage" class="export-message" aria-live="polite"></p>
+    </section>
+  </main>
+</body>
+</html>
