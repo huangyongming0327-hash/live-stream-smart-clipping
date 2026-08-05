@@ -91,8 +91,8 @@
 ## TASK-005
 
 - 状态：单视频本地候选审核、浏览器预览、毫秒级入出点调整、明确人工确认、单片段
-  MP4/SRT 导出、`review_current.json` 和真实媒体验证已完成；等待 Draft PR 三项检查与
-  独立审核。
+  MP4/SRT 导出、`review_current.json` 和真实媒体验证已完成；独立审核 93/100、无阻断，
+  PR #7 已合并，merge commit 为 `7ae8b89dfc92f5915030662e7a36bf048da14254`。
 - CLI 为 `python -m liveclip review --video ... --timeline ... --analysis ...`，可选
   `--output`；只绑定一个相互匹配的视频、timeline 和 analysis。
 - 标准库临时服务只监听 `127.0.0.1`，页面、session、媒体 Range 和导出 API 使用运行时
@@ -108,6 +108,28 @@
 - 原视频、timeline 和 analysis 前后 SHA-256 完全一致；浏览器硬关闭后服务在心跳超时内
   停止且没有残留 Python 审核进程。真实输入、review、MP4、SRT 和运行状态继续被 Git
   忽略。
+
+## TASK-006
+
+- 状态：单 MP4 端到端统一入口、阶段复用/恢复、隐私最小化 `pipeline_status.json`、
+  Windows 双击启动器和两项 TASK-005 易用性修正已完成本地实现与真实验证；等待 Draft PR
+  latest-head 三项 Actions 和独立审核。
+- CLI 为 `python -m liveclip run --video ...`；默认 Paraformer、视频旁工作目录和其下
+  `exports`，可选 SenseVoice、自定义工作/导出目录和不自动打开浏览器。
+- 启动检查在 ASR 前验证 MP4、FFmpeg/ffprobe、ASR 模型、文本模型环境变量和目录写入；
+  三阶段直接调用现有 transcribe、analyze 和 review，不复制核心算法。
+- 同视频重跑会验证视频 SHA、timeline SHA、analysis SHA 和 completed review 的输出文件；
+  合法产物复用，未完成状态交给既有恢复逻辑，损坏或错配文件停止并要求用户自行移走。
+- 双击 `Start-LiveClip.cmd` 使用系统 MP4 选择框和两个 ASR 选项，不需要管理员权限、
+  不修改系统环境变量，也没有引入 GUI 框架、安装包或常驻服务。
+- 真实 827.766 秒输入首次完成 SenseVoice 本地 ASR；文本模型两次返回不满足 schema 的
+  candidate，流程安全停止且未发布伪结果。随后对 exact-SHA 匹配的既有已审核 analysis
+  进行合法复用，统一入口打开 6-candidate 审核页并完成一次人工调整、重新确认和导出。
+- 真实输出目标 51.676 秒，ffprobe 为 51.721 秒、H.264/AAC，开头/中间/结尾均可解码；
+  14 条 SRT 与 timeline 独立重算逐字符一致。原视频、timeline、analysis 哈希保持不变，
+  二次运行三阶段均复用且无残留审核进程。
+- source-only 为基础 212 passed/1 deselected、ASR 91 passed/2 deselected，均 0 failed；
+  `pip check` 通过。真实媒体、状态、分析、review 和输出继续被 Git 忽略；未执行 TASK-007。
 
 ## TASK-GIT-001
 

@@ -19,11 +19,13 @@ from liveclip.media import FFmpegPaths
 
 from .exporter import ExportResult, export_review_clip
 from .schema import (
+    CompletedExport,
     ReviewConflictError,
     ReviewError,
     ReviewInputs,
     bind_review_inputs,
     build_session_payload,
+    load_completed_export,
 )
 
 
@@ -54,7 +56,12 @@ class ReviewApplication:
         self.exporter = exporter
         self.paths = paths
         self.export_lock = threading.Lock()
-        self.exported_candidate_id: str | None = None
+        self.completed_export = load_completed_export(inputs)
+        self.exported_candidate_id: str | None = (
+            self.completed_export.candidate_id
+            if self.completed_export is not None
+            else None
+        )
         self.heartbeat_timeout_seconds = heartbeat_timeout_seconds
         self._heartbeat_lock = threading.Lock()
         self._last_heartbeat = time.monotonic()
@@ -322,6 +329,7 @@ class ReviewRequestHandler(BaseHTTPRequestHandler):
                 build_session_payload(
                     self.app.inputs,
                     exported_candidate_id=self.app.exported_candidate_id,
+                    completed_export=self.app.completed_export,
                 ),
             )
         elif path == "/media":
@@ -374,6 +382,15 @@ class ReviewRequestHandler(BaseHTTPRequestHandler):
                 paths=self.app.paths,
             )
             self.app.exported_candidate_id = str(payload["candidate_id"])
+            self.app.completed_export = CompletedExport(
+                candidate_id=self.app.exported_candidate_id,
+                video_file_name=result.video_path.name,
+                subtitle_file_name=result.subtitle_path.name,
+                final_start_ms=payload["start_ms"],
+                final_end_ms=payload["end_ms"],
+                duration_ms=result.duration_ms,
+                output_folder_name=self.app.inputs.output_dir.name or "exports",
+            )
             message = "导出完成。"
             if result.subtitle_count == 0:
                 message += "该片段范围内没有字幕。"
@@ -387,6 +404,9 @@ class ReviewRequestHandler(BaseHTTPRequestHandler):
                     "subtitle_file_name": result.subtitle_path.name,
                     "subtitle_count": result.subtitle_count,
                     "duration_ms": result.duration_ms,
+                    "final_start_ms": payload["start_ms"],
+                    "final_end_ms": payload["end_ms"],
+                    "output_folder_name": self.app.inputs.output_dir.name or "exports",
                 },
             )
         except ReviewConflictError as exc:
@@ -434,22 +454,32 @@ def launch_review(
     analysis: str | Path,
     *,
     output_dir: str | Path | None = None,
+    open_browser: bool = True,
+    paths: FFmpegPaths | None = None,
 ) -> None:
     inputs = bind_review_inputs(
         video,
         timeline,
         analysis,
         output_dir=output_dir,
+        paths=paths,
     )
-    server = create_review_server(inputs)
+    server = create_review_server(
+        inputs,
+        paths=paths,
+        heartbeat_timeout_seconds=60.0 if not open_browser else 10.0,
+    )
     host, port = server.server_address
     url = f"http://{host}:{port}/?token={quote(server.app.token)}"
     serve_thread = threading.Thread(target=server.serve_forever, daemon=False)
     serve_thread.start()
     try:
-        try:
-            opened = webbrowser.open(url, new=1)
-        except Exception:
+        if open_browser:
+            try:
+                opened = webbrowser.open(url, new=1)
+            except Exception:
+                opened = False
+        else:
             opened = False
         print("审核页面已启动，仅监听 127.0.0.1。关闭页面或按 Ctrl+C 停止。")
         if not opened:

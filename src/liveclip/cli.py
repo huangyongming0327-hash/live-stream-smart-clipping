@@ -12,6 +12,7 @@ from typing import Sequence
 from .analysis import AnalysisError, run_analysis
 from .asr.pipeline import ASRPipelineError, StateFileError, run_transcription
 from .media import MediaError
+from .pipeline import PipelineRunError, run_pipeline
 from .review.schema import ReviewError
 from .review.server import launch_review
 
@@ -81,6 +82,30 @@ def build_parser() -> argparse.ArgumentParser:
     review.add_argument(
         "--output",
         help="Export directory (default: <video_stem>_exports beside the MP4).",
+    )
+    run = commands.add_parser(
+        "run",
+        help="Run local transcription, analysis, review, and one confirmed export.",
+    )
+    run.add_argument("--video", required=True, help="One source .mp4 file.")
+    run.add_argument(
+        "--workdir",
+        help="Working directory (default: <video_stem>_liveclip beside the MP4).",
+    )
+    run.add_argument(
+        "--asr-model",
+        choices=("paraformer", "sensevoice"),
+        default="paraformer",
+        help="Local ASR model (default: paraformer).",
+    )
+    run.add_argument(
+        "--output",
+        help="Export directory (default: <workdir>/exports).",
+    )
+    run.add_argument(
+        "--no-open-browser",
+        action="store_true",
+        help="Start the local review service without opening the default browser.",
     )
     return parser
 
@@ -195,6 +220,44 @@ def main(argv: Sequence[str] | None = None) -> int:
     effective_argv = list(sys.argv[1:] if argv is None else argv)
     parser = build_parser()
     args = parser.parse_args(effective_argv)
+    if args.command == "run":
+        assets_root = _assets_root(None)
+        try:
+            reexec_result = _maybe_reexec(
+                effective_argv,
+                engine=args.asr_model,
+                assets_root=assets_root,
+                asr_python=None,
+            )
+            if reexec_result is not None:
+                return reexec_result
+            run_pipeline(
+                args.video,
+                workdir=args.workdir,
+                asr_model=args.asr_model,
+                output_dir=args.output,
+                open_browser=not args.no_open_browser,
+                assets_root=assets_root,
+            )
+            return 0
+        except KeyboardInterrupt:
+            print(
+                "当前阶段：已中断\n下一步：再次运行同一命令可继续。",
+                file=sys.stderr,
+            )
+            return 130
+        except PipelineRunError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+        except (ASRPipelineError, StateFileError, MediaError, OSError, ValueError) as exc:
+            print(
+                "启动检查：失败\n"
+                f"原因：{' '.join(str(exc).splitlines())}\n"
+                "下一步：修正直接原因后再次运行同一命令。\n"
+                "再次运行同一命令：可以继续。",
+                file=sys.stderr,
+            )
+            return 1
     if args.command == "analyze":
         try:
             run_analysis(args.timeline, output_dir=args.output)

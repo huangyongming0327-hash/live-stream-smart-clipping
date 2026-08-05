@@ -22,12 +22,14 @@ from liveclip.media.errors import (
 from liveclip.media.process_runner import decode_process_output
 from liveclip.review.exporter import ExportResult, export_review_clip, render_timeline_srt
 from liveclip.review.schema import (
+    CompletedExport,
     MAX_CLIP_DURATION_MS,
     ReviewConflictError,
     ReviewError,
     ReviewInputs,
     bind_review_inputs,
     build_session_payload,
+    load_completed_export,
     validate_clip_range,
 )
 from liveclip.review import server as server_module
@@ -299,6 +301,7 @@ def test_no_candidates_is_a_valid_pending_session(tmp_path: Path) -> None:
     payload = build_session_payload(inputs)
     assert payload["candidates"] == []
     assert payload["export_completed"] is False
+    assert payload["completed_export"] is None
 
 
 def test_candidate_list_fields_and_default_pending_status(tmp_path: Path) -> None:
@@ -619,8 +622,14 @@ def test_successful_export_api_allows_only_one_session_export(tmp_path: Path) ->
 
     payload = {"candidate_id": "clip-001", "start_ms": 4_000, "end_ms": 22_500, "confirmed": True}
     with running_server(inputs, exporter=fake_exporter) as server:
-        status, _, _ = request(server, "POST", f"/api/export?token={TOKEN}", body=payload)
+        status, _, first_body = request(server, "POST", f"/api/export?token={TOKEN}", body=payload)
         assert status == 200
+        response = json.loads(first_body)
+        assert response["video_file_name"] == "one.mp4"
+        assert response["subtitle_file_name"] == "one.srt"
+        assert response["final_start_ms"] == 4_000
+        assert response["final_end_ms"] == 22_500
+        assert response["output_folder_name"] == inputs.output_dir.name
         status, _, body = request(server, "POST", f"/api/export?token={TOKEN}", body=payload)
         assert status == 409
         assert "已经完成一次导出" in body.decode("utf-8")
@@ -643,6 +652,58 @@ def test_static_page_is_local_framework_free_and_defaults_unconfirmed() -> None:
     assert 'addEventListener("pagehide", requestShutdown)' in javascript
     assert "keepalive: true" in javascript
     assert 'localUrl("/api/heartbeat")' in javascript
+    assert "elements.confirmExport.checked = false" in javascript
+    assert "final_start_ms" in javascript and "final_end_ms" in javascript
+    assert "video_file_name" in javascript and "subtitle_file_name" in javascript
+    assert "output_folder_name" in javascript
+
+
+def test_existing_completed_review_is_displayed_without_absolute_paths(tmp_path: Path) -> None:
+    inputs, _, _ = make_review_inputs(tmp_path)
+    inputs.output_dir.mkdir()
+    video_name = "真实 直播_clip-001.mp4"
+    subtitle_name = "真实 直播_clip-001.srt"
+    (inputs.output_dir / video_name).write_bytes(b"video")
+    (inputs.output_dir / subtitle_name).write_text("", encoding="utf-8")
+    payload = {
+        "schema_version": "1.0",
+        "source": {
+            "analysis_file_name": inputs.analysis_path.name,
+            "analysis_sha256": inputs.analysis_sha256,
+            "timeline_file_name": inputs.timeline_path.name,
+            "timeline_sha256": inputs.timeline_sha256,
+            "video_file_name": inputs.video_path.name,
+        },
+        "review": {
+            "candidate_id": "clip-001",
+            "approved": True,
+            "original_start_ms": 3_000,
+            "original_end_ms": 23_000,
+            "final_start_ms": 4_000,
+            "final_end_ms": 22_500,
+            "reviewed_at": "2026-08-05T00:00:00Z",
+        },
+        "export": {
+            "video_file_name": video_name,
+            "subtitle_file_name": subtitle_name,
+            "completed": True,
+        },
+    }
+    inputs.review_path.write_bytes(_json_bytes(payload))
+    completed = load_completed_export(inputs)
+    assert completed == CompletedExport(
+        candidate_id="clip-001",
+        video_file_name=video_name,
+        subtitle_file_name=subtitle_name,
+        final_start_ms=4_000,
+        final_end_ms=22_500,
+        duration_ms=18_500,
+        output_folder_name=inputs.output_dir.name,
+    )
+    session = build_session_payload(inputs, completed_export=completed)
+    assert session["export_completed"] is True
+    assert session["completed_export"]["output_folder_name"] == inputs.output_dir.name
+    assert str(inputs.output_dir) not in json.dumps(session, ensure_ascii=False)
 
 
 def test_heartbeat_timeout_stops_server_after_hard_page_close(tmp_path: Path) -> None:
@@ -687,6 +748,40 @@ def test_launch_starts_local_service_before_opening_browser(
     assert opened_urls[0].startswith("http://127.0.0.1:")
 
 
+def test_no_open_browser_allows_time_to_copy_local_url(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    inputs, _, _ = make_review_inputs(tmp_path)
+    captured: dict[str, Any] = {}
+    fake_server = SimpleNamespace(
+        server_address=("127.0.0.1", 12345),
+        app=SimpleNamespace(token=TOKEN),
+        serve_forever=lambda: None,
+        shutdown=lambda: None,
+        server_close=lambda: None,
+    )
+    monkeypatch.setattr(server_module, "bind_review_inputs", lambda *args, **kwargs: inputs)
+
+    def create(*_args: Any, **kwargs: Any) -> Any:
+        captured.update(kwargs)
+        return fake_server
+
+    monkeypatch.setattr(server_module, "create_review_server", create)
+    monkeypatch.setattr(
+        server_module.webbrowser,
+        "open",
+        lambda *_args, **_kwargs: pytest.fail("browser must not open"),
+    )
+    server_module.launch_review(
+        "video.mp4",
+        "timeline.json",
+        "analysis.json",
+        open_browser=False,
+    )
+    assert captured["heartbeat_timeout_seconds"] == 60.0
+
+
 def test_cli_input_error_is_one_line_without_traceback_or_absolute_path(capsys: Any) -> None:
     missing = "definitely-missing.mp4"
     exit_code = main([
@@ -702,8 +797,8 @@ def test_cli_input_error_is_one_line_without_traceback_or_absolute_path(capsys: 
     assert str(Path(missing).resolve()) not in captured.err
 
 
-def test_task_006_command_was_not_added() -> None:
+def test_task_006_adds_only_the_bounded_run_command() -> None:
     parser = build_parser()
     choices = parser._subparsers._group_actions[0].choices  # type: ignore[union-attr]
-    assert "TASK-006" not in choices
-    assert set(choices) == {"transcribe", "analyze", "review"}
+    assert "TASK-007" not in choices
+    assert set(choices) == {"transcribe", "analyze", "review", "run"}

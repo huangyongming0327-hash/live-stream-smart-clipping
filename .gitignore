@@ -85,6 +85,7 @@ timeline.json
 subtitles.srt
 transcript.txt
 task_state.json
+pipeline_status.json
 
 # Local semantic analysis output
 current_analysis.json
@@ -94,6 +95,7 @@ analysis_history/
 # Local candidate review and clip export output
 review_current.json
 *_exports/
+exports/
 
 # Large model and checkpoint formats
 *.bin
