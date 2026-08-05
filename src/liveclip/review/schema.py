@@ -39,6 +39,7 @@ class ReviewInputs:
     output_dir: Path
     review_path: Path
     video_duration_ms: int
+    video_height: int
     video_sha256: str
     timeline_sha256: str
     analysis_sha256: str
@@ -58,6 +59,7 @@ class CompletedExport:
     final_end_ms: int
     duration_ms: int
     output_folder_name: str
+    subtitles_burned_in: bool
 
 
 ProbeFunction = Callable[..., MediaProbe]
@@ -132,6 +134,13 @@ def bind_review_inputs(
         or video_probe.duration_seconds <= 0
     ):
         raise ReviewError("原视频必须包含可读取的视频流和有效时长。")
+    video_height = video_probe.video_streams[0].height
+    if (
+        isinstance(video_height, bool)
+        or not isinstance(video_height, int)
+        or video_height <= 0
+    ):
+        raise ReviewError("原视频必须包含可读取的视频高度。")
     video_duration_ms = int(round(video_probe.duration_seconds * 1000))
 
     timeline_data, timeline_raw = _read_json(timeline_path, "timeline")
@@ -188,6 +197,7 @@ def bind_review_inputs(
         output_dir=selected_output,
         review_path=analysis_path.with_name("review_current.json"),
         video_duration_ms=video_duration_ms,
+        video_height=video_height,
         video_sha256=video_sha256,
         timeline_sha256=timeline_sha256,
         analysis_sha256=hashlib.sha256(analysis_raw).hexdigest(),
@@ -257,6 +267,7 @@ def load_completed_export(inputs: ReviewInputs) -> CompletedExport | None:
             return None
         video_name = export.get("video_file_name")
         subtitle_name = export.get("subtitle_file_name")
+        subtitles_burned_in = export.get("subtitles_burned_in")
         if (
             not isinstance(video_name, str)
             or not video_name
@@ -264,6 +275,7 @@ def load_completed_export(inputs: ReviewInputs) -> CompletedExport | None:
             or not isinstance(subtitle_name, str)
             or not subtitle_name
             or Path(subtitle_name).name != subtitle_name
+            or not isinstance(subtitles_burned_in, bool)
             or not (inputs.output_dir / video_name).is_file()
             or not (inputs.output_dir / subtitle_name).is_file()
         ):
@@ -276,6 +288,7 @@ def load_completed_export(inputs: ReviewInputs) -> CompletedExport | None:
             final_end_ms=end_ms,
             duration_ms=end_ms - start_ms,
             output_folder_name=inputs.output_dir.name or "exports",
+            subtitles_burned_in=subtitles_burned_in,
         )
     except (
         OSError,
@@ -341,6 +354,7 @@ def build_session_payload(
                 "final_end_ms": completed_export.final_end_ms,
                 "duration_ms": completed_export.duration_ms,
                 "output_folder_name": completed_export.output_folder_name,
+                "subtitles_burned_in": completed_export.subtitles_burned_in,
             }
             if completed_export is not None
             else None

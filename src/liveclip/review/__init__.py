@@ -1,6 +1,11 @@
 """Local candidate review and single-clip export."""
 
-from .exporter import ExportResult, export_review_clip, render_timeline_srt
+from .exporter import (
+    ExportResult,
+    export_review_clip,
+    render_timeline_srt,
+    subtitle_font_size,
+)
 from .schema import (
     CompletedExport,
     ReviewConflictError,
@@ -23,5 +28,6 @@ __all__ = [
     "export_review_clip",
     "load_completed_export",
     "render_timeline_srt",
+    "subtitle_font_size",
     "validate_clip_range",
 ]

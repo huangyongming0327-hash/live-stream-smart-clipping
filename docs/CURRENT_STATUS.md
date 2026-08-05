@@ -112,8 +112,8 @@
 ## TASK-006
 
 - 状态：单 MP4 端到端统一入口、阶段复用/恢复、隐私最小化 `pipeline_status.json`、
-  Windows 双击启动器和两项 TASK-005 易用性修正已完成本地实现与真实验证；等待 Draft PR
-  latest-head 三项 Actions 和独立审核。
+  Windows 双击启动器和两项 TASK-005 易用性修正已通过审核并合并；PR #8 merge commit 为
+  `97fdcd5bb782a5fafef188a1c6f8f34839d0d24a`。
 - CLI 为 `python -m liveclip run --video ...`；默认 Paraformer、视频旁工作目录和其下
   `exports`，可选 SenseVoice、自定义工作/导出目录和不自动打开浏览器。
 - 启动检查在 ASR 前验证 MP4、FFmpeg/ffprobe、ASR 模型、文本模型环境变量和目录写入；
@@ -129,7 +129,29 @@
   14 条 SRT 与 timeline 独立重算逐字符一致。原视频、timeline、analysis 哈希保持不变，
   二次运行三阶段均复用且无残留审核进程。
 - source-only 为基础 212 passed/1 deselected、ASR 91 passed/2 deselected，均 0 failed；
-  `pip check` 通过。真实媒体、状态、分析、review 和输出继续被 Git 忽略；未执行 TASK-007。
+  `pip check` 通过。真实媒体、状态、分析、review 和输出继续被 Git 忽略。
+
+## TASK-007
+
+- 状态：正式 MP4 默认字幕烧录、独立 SRT 保留、审核完成态字段/页面提示及 Windows 启动器
+  稳健性修复已完成本地实现、自动测试和真实验证；等待 Draft PR latest-head 三项 Actions。
+- 非空最终 SRT 与裁剪视频在同一次 FFmpeg H.264/AAC 导出中烧录；字幕固定为微软雅黑优先、
+  白字、黑色描边、底部居中和安全边距，目标字号按视频高度取 24/28/32 px 三档并换算为
+  libass 坐标。没有新增样式编辑、动画、翻译、纠错、改写、ASR 或文本模型调用。
+- MP4、独立同名 SRT 与 `review_current.json` 只在 FFmpeg/ffprobe、输入 SHA 复核及输出校验
+  全部成功后无覆盖发布；完成态新增 `subtitles_burned_in=true`，旧的缺字段 review 不作为
+  已完成结果复用。没有字幕的合法片段仍导出视频和空 SRT，并明确记录 false。
+- 启动器只选择一个真实 Python，优先仓库/资产根虚拟环境，再取 PATH 中首个非 WindowsApps
+  Application；资产根缺失时列出缺失项并给出可复制的用户级 `LIVECLIP_ASSETS_ROOT` 示例，
+  不再要求用户关闭 Windows 应用执行别名。
+- 真实验证复用既有 827.766 秒视频、169-segment timeline 和 completed analysis，没有重跑
+  ASR 或文本模型。最终输出 51.821 秒、H.264/AAC、14 条独立 SRT；开头/中间/结尾画面均
+  可见基本同步的底部字幕，最长抽查字幕自然换为两行且未明显遮挡主体。
+- 原视频、timeline、analysis 前后 SHA-256 不变；真实媒体、review、输出与三点抽帧均被
+  Git 忽略。受控 PATH 同时放入真实 Python 与 WindowsApps 路径 Python 后，生产解析器只
+  选中一个真实 Python，且 `liveclip --help` 启动成功。
+- 定向回归 66 passed、0 failed；source-only 为基础 224 passed/1 deselected、ASR
+  91 passed/2 deselected，均 0 failed，`pip check` 通过。未执行 TASK-008。
 
 ## TASK-GIT-001
 
@@ -215,11 +237,13 @@
 - TASK-002-HUMAN-002 的发布完整性阻断已修复并复核；PR #4 已合并，TASK-002 已关闭。
 - TASK-003 已通过独立审核并合并；其非阻断 backlog 未在 TASK-004 或 TASK-005 顺手修复。
 - TASK-004 已通过独立审核并合并；其候选在 TASK-005 中仍全部默认待审核。
-- TASK-005 本地实现、自动测试和真实验证已完成，等待 Draft PR 三项检查与独立审核。
+- TASK-005 已通过独立审核并合并。
+- TASK-006 已通过独立审核并合并；PR #8 是 TASK-007 的最新 `master` 基线。
+- TASK-007 本地实现、自动测试和真实验证已完成，等待 Draft PR 三项检查。
 
 ## 建议下一步
 
-- 下一步只继续 TASK-005 的 Draft PR 三项 Actions 和独立审核交接；继续禁止 TASK-006。
+- 下一步只继续 TASK-007 的 Draft PR 三项 Actions 与交接；保持 Draft，不执行 TASK-008。
 
 ## 约束核验
 
@@ -233,4 +257,11 @@
 - TASK-004 真实请求只发送必要字幕字段，视频和音频未发送；API Key 未进入请求正文、
   状态、日志、结果、报告或 Git；真实 timeline/analysis/state 均未上传；
 - TASK-005 没有向互联网发送视频、字幕或审核数据；原视频、timeline 和 analysis 未修改，
-  真实 review、导出 MP4/SRT、运行数据和项目本地 FFmpeg 均未上传；未执行 TASK-006。
+  真实 review、导出 MP4/SRT、运行数据和项目本地 FFmpeg 均未上传。
+- TASK-007 复用现有 timeline/analysis，不重新调用 ASR 或文本模型；原视频、timeline、
+  analysis SHA 不变，真实烧录 MP4、独立 SRT、review 和抽帧均留在 Git 忽略目录。没有下载
+  或移动模型，没有修改系统执行别名，没有执行 TASK-008。
+- TASK-007 导出将最终 SRT 同时用于固定样式烧录和独立文件；临时 MP4/SRT 通过 ffprobe、
+  输入 SHA 和输出校验后才无覆盖发布，最后原子写 review。失败不发布伪完成产物。
+- 产品边界继续不含批量、多片段拼接、字幕样式编辑、翻译/纠错/改写、竖屏、队列、自动
+  发布、TASK-003/TASK-004 backlog 或 TASK-008。

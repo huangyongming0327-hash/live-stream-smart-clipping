@@ -224,6 +224,7 @@ def _completed_review_matches(
             and 0 <= start_ms < end_ms <= video_duration_ms
             and 1_000 <= end_ms - start_ms <= 180_000
             and export.get("completed") is True
+            and isinstance(export.get("subtitles_burned_in"), bool)
             and isinstance(video_file_name, str)
             and Path(video_file_name).name == video_file_name
             and isinstance(subtitle_file_name, str)

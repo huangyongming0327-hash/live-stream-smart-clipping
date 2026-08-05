@@ -6,6 +6,7 @@ import json
 import threading
 import urllib.request
 from contextlib import contextmanager
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -20,7 +21,12 @@ from liveclip.media.errors import (
     ProcessFailure,
 )
 from liveclip.media.process_runner import decode_process_output
-from liveclip.review.exporter import ExportResult, export_review_clip, render_timeline_srt
+from liveclip.review.exporter import (
+    ExportResult,
+    export_review_clip,
+    render_timeline_srt,
+    subtitle_font_size,
+)
 from liveclip.review.schema import (
     CompletedExport,
     MAX_CLIP_DURATION_MS,
@@ -395,6 +401,13 @@ def test_fake_ffmpeg_ffprobe_success_publishes_mp4_srt_and_review(tmp_path: Path
     assert command[command.index("-c:a") + 1] == "aac"
     assert command[command.index("-b:a") + 1] == "160k"
     assert command[command.index("-movflags") + 1] == "+faststart"
+    subtitle_filter = command[command.index("-vf") + 1]
+    assert "subtitles=filename='" in subtitle_filter
+    assert "FontName=Microsoft YaHei" in subtitle_filter
+    assert "FontSize=9.6" in subtitle_filter
+    assert "PrimaryColour=&H00FFFFFF" in subtitle_filter
+    assert "OutlineColour=&H00000000" in subtitle_filter
+    assert "Shadow=0" in subtitle_filter and "Alignment=2" in subtitle_filter
     review = json.loads(inputs.review_path.read_text(encoding="utf-8"))
     assert review["review"] == {
         "candidate_id": "clip-001",
@@ -408,6 +421,7 @@ def test_fake_ffmpeg_ffprobe_success_publishes_mp4_srt_and_review(tmp_path: Path
     assert review["source"]["timeline_sha256"] == inputs.timeline_sha256
     assert review["source"]["analysis_sha256"] == inputs.analysis_sha256
     assert review["export"]["completed"] is True
+    assert review["export"]["subtitles_burned_in"] is True
     assert inputs.video_path.read_bytes() == source_before
     assert inputs.timeline_path.read_bytes() == timeline_before
     assert inputs.analysis_path.read_bytes() == analysis_before
@@ -429,6 +443,60 @@ def test_no_audio_source_uses_local_silence_and_still_requests_aac(tmp_path: Pat
     command = fake_ffmpeg.calls[0]
     assert "anullsrc=channel_layout=stereo:sample_rate=48000" in command
     assert command[command.index("-c:a") + 1] == "aac"
+
+
+@pytest.mark.parametrize(
+    ("height", "expected"),
+    [(720, 24), (721, 28), (1_440, 28), (1_441, 32)],
+)
+def test_subtitle_font_size_uses_only_three_height_bands(height: int, expected: int) -> None:
+    assert subtitle_font_size(height) == expected
+
+
+def test_subtitle_filter_escapes_chinese_space_ampersand_parentheses_and_drive(
+    tmp_path: Path,
+) -> None:
+    inputs, fake_probe, paths = make_review_inputs(tmp_path)
+    inputs = replace(inputs, output_dir=tmp_path / "中文 空格 & (括号)")
+    fake_ffmpeg = FakeFFmpeg()
+    export_review_clip(
+        inputs,
+        candidate_id="clip-001",
+        start_ms=4_000,
+        end_ms=22_500,
+        confirmed=True,
+        paths=paths,
+        process_function=fake_ffmpeg,
+        probe_function=fake_probe,
+    )
+    command = fake_ffmpeg.calls[0]
+    subtitle_filter = command[command.index("-vf") + 1]
+    assert "中文 空格 & (括号)" in subtitle_filter
+    assert "\\:" in subtitle_filter
+    assert "\\" in subtitle_filter
+
+
+def test_empty_srt_exports_without_filter_and_records_no_burn_in(tmp_path: Path) -> None:
+    inputs, fake_probe, paths = make_review_inputs(tmp_path)
+    fake_probe.output_duration_ms = 1_000
+    fake_ffmpeg = FakeFFmpeg()
+    result = export_review_clip(
+        inputs,
+        candidate_id="clip-001",
+        start_ms=23_000,
+        end_ms=24_000,
+        confirmed=True,
+        paths=paths,
+        process_function=fake_ffmpeg,
+        probe_function=fake_probe,
+    )
+    assert result.subtitle_count == 0
+    assert result.subtitles_burned_in is False
+    assert result.subtitle_path.read_text(encoding="utf-8") == ""
+    command = fake_ffmpeg.calls[0]
+    assert command[command.index("-vf") + 1] == "setpts=PTS-STARTPTS"
+    review = json.loads(inputs.review_path.read_text(encoding="utf-8"))
+    assert review["export"]["subtitles_burned_in"] is False
 
 
 def test_existing_output_files_are_never_overwritten(tmp_path: Path) -> None:
@@ -618,6 +686,7 @@ def test_successful_export_api_allows_only_one_session_export(tmp_path: Path) ->
             2,
             kwargs["end_ms"] - kwargs["start_ms"],
             0.1,
+            True,
         )
 
     payload = {"candidate_id": "clip-001", "start_ms": 4_000, "end_ms": 22_500, "confirmed": True}
@@ -656,6 +725,9 @@ def test_static_page_is_local_framework_free_and_defaults_unconfirmed() -> None:
     assert "final_start_ms" in javascript and "final_end_ms" in javascript
     assert "video_file_name" in javascript and "subtitle_file_name" in javascript
     assert "output_folder_name" in javascript
+    assert "视频字幕：已烧录" in javascript
+    assert "独立字幕：已生成" in javascript
+    assert "导出的 MP4 会包含画面内字幕，同时保留独立 SRT。" in html
 
 
 def test_existing_completed_review_is_displayed_without_absolute_paths(tmp_path: Path) -> None:
@@ -687,6 +759,7 @@ def test_existing_completed_review_is_displayed_without_absolute_paths(tmp_path:
             "video_file_name": video_name,
             "subtitle_file_name": subtitle_name,
             "completed": True,
+            "subtitles_burned_in": True,
         },
     }
     inputs.review_path.write_bytes(_json_bytes(payload))
@@ -699,11 +772,48 @@ def test_existing_completed_review_is_displayed_without_absolute_paths(tmp_path:
         final_end_ms=22_500,
         duration_ms=18_500,
         output_folder_name=inputs.output_dir.name,
+        subtitles_burned_in=True,
     )
     session = build_session_payload(inputs, completed_export=completed)
     assert session["export_completed"] is True
     assert session["completed_export"]["output_folder_name"] == inputs.output_dir.name
+    assert session["completed_export"]["subtitles_burned_in"] is True
     assert str(inputs.output_dir) not in json.dumps(session, ensure_ascii=False)
+
+
+def test_old_review_without_burn_in_field_is_not_reported_as_completed(tmp_path: Path) -> None:
+    inputs, _, _ = make_review_inputs(tmp_path)
+    inputs.output_dir.mkdir()
+    video_name = "真实 直播_clip-001.mp4"
+    subtitle_name = "真实 直播_clip-001.srt"
+    (inputs.output_dir / video_name).write_bytes(b"video")
+    (inputs.output_dir / subtitle_name).write_text("", encoding="utf-8")
+    payload = {
+        "schema_version": "1.0",
+        "source": {
+            "analysis_file_name": inputs.analysis_path.name,
+            "analysis_sha256": inputs.analysis_sha256,
+            "timeline_file_name": inputs.timeline_path.name,
+            "timeline_sha256": inputs.timeline_sha256,
+            "video_file_name": inputs.video_path.name,
+        },
+        "review": {
+            "candidate_id": "clip-001",
+            "approved": True,
+            "original_start_ms": 3_000,
+            "original_end_ms": 23_000,
+            "final_start_ms": 4_000,
+            "final_end_ms": 22_500,
+            "reviewed_at": "2026-08-05T00:00:00Z",
+        },
+        "export": {
+            "video_file_name": video_name,
+            "subtitle_file_name": subtitle_name,
+            "completed": True,
+        },
+    }
+    inputs.review_path.write_bytes(_json_bytes(payload))
+    assert load_completed_export(inputs) is None
 
 
 def test_heartbeat_timeout_stops_server_after_hard_page_close(tmp_path: Path) -> None:

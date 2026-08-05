@@ -444,6 +444,7 @@ def test_completed_review_is_reused_but_review_page_still_opens(tmp_path: Path) 
             "video_file_name": "source_candidate-001.mp4",
             "subtitle_file_name": "source_candidate-001.srt",
             "completed": True,
+            "subtitles_burned_in": True,
         },
     }
     atomic_write_json(workdir / "review_current.json", review)
