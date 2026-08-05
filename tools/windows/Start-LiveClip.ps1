@@ -90,22 +90,25 @@ function Resolve-LiveClipAssetsRoot {
         $missing.Add("FFmpeg/ffprobe")
     }
 
+    # Keep this Windows PowerShell 5.1 entry point ASCII-only. English-locale
+    # hosts otherwise decode a BOM-less UTF-8 script through the ANSI code page.
+    $modelDirectory = -join ([char]0x6A21, [char]0x578B)
     if ($AsrModel -eq "sensevoice") {
         $requiredModelFiles = @(
-            "模型\asr\sensevoice-small\model.int8.onnx",
-            "模型\asr\sensevoice-small\tokens.txt",
-            "模型\asr\sensevoice-small\silero_vad.onnx"
+            "$modelDirectory\asr\sensevoice-small\model.int8.onnx",
+            "$modelDirectory\asr\sensevoice-small\tokens.txt",
+            "$modelDirectory\asr\sensevoice-small\silero_vad.onnx"
         )
         $modelLabel = "SenseVoice model"
     }
     else {
         $requiredModelFiles = @(
-            "模型\asr\paraformer-zh\model.pt",
-            "模型\asr\paraformer-zh\config.yaml",
-            "模型\asr\fsmn-vad\model.pt",
-            "模型\asr\fsmn-vad\config.yaml",
-            "模型\asr\ct-punc\model.pt",
-            "模型\asr\ct-punc\config.yaml"
+            "$modelDirectory\asr\paraformer-zh\model.pt",
+            "$modelDirectory\asr\paraformer-zh\config.yaml",
+            "$modelDirectory\asr\fsmn-vad\model.pt",
+            "$modelDirectory\asr\fsmn-vad\config.yaml",
+            "$modelDirectory\asr\ct-punc\model.pt",
+            "$modelDirectory\asr\ct-punc\config.yaml"
         )
         $modelLabel = "Paraformer model"
     }
@@ -116,7 +119,7 @@ function Resolve-LiveClipAssetsRoot {
     }
 
     if ($missing.Count -gt 0) {
-        $example = '[Environment]::SetEnvironmentVariable("LIVECLIP_ASSETS_ROOT", "<包含模型、FFmpeg和ASR环境的目录>", "User")'
+        $example = '[Environment]::SetEnvironmentVariable("LIVECLIP_ASSETS_ROOT", "<ASSETS_ROOT_WITH_MODELS_FFMPEG_AND_ASR_ENV>", "User")'
         throw (
             "LIVECLIP_ASSETS_ROOT is not configured, and repository-local assets are " +
             "missing: $($missing -join ', '). Set it in PowerShell with: $example"

@@ -104,6 +104,6 @@ def test_missing_assets_message_lists_items_and_copyable_user_setting(tmp_path: 
     launcher_source = LAUNCHER.read_text(encoding="utf-8")
     assert (
         '[Environment]::SetEnvironmentVariable("LIVECLIP_ASSETS_ROOT", '
-        '"<包含模型、FFmpeg和ASR环境的目录>", "User")'
+        '"<ASSETS_ROOT_WITH_MODELS_FFMPEG_AND_ASR_ENV>", "User")'
     ) in launcher_source
     assert "API_KEY" not in combined
