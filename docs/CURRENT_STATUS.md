@@ -133,14 +133,15 @@
 
 ## TASK-007
 
-- 状态：正式 MP4 默认字幕烧录、独立 SRT 保留、审核完成态字段/页面提示及 Windows 启动器
-  稳健性修复已完成本地实现、自动测试和真实验证；等待 Draft PR latest-head 三项 Actions。
+- 状态：独立审核为 84/100，并要求修复单引号字幕路径阻断与完成态/SRT 一致性；TASK-007-FIX
+  已完成最小本地实现、自动测试和真实 Windows FFmpeg 验证，等待同一 Draft PR latest-head
+  三项 Actions，之后仍必须再次独立复审。
 - 非空最终 SRT 与裁剪视频在同一次 FFmpeg H.264/AAC 导出中烧录；字幕固定为微软雅黑优先、
   白字、黑色描边、底部居中和安全边距，目标字号按视频高度取 24/28/32 px 三档并换算为
   libass 坐标。没有新增样式编辑、动画、翻译、纠错、改写、ASR 或文本模型调用。
 - MP4、独立同名 SRT 与 `review_current.json` 只在 FFmpeg/ffprobe、输入 SHA 复核及输出校验
-  全部成功后无覆盖发布；完成态新增 `subtitles_burned_in=true`，旧的缺字段 review 不作为
-  已完成结果复用。没有字幕的合法片段仍导出视频和空 SRT，并明确记录 false。
+  全部成功后无覆盖发布；完成态现在同时校验严格布尔值和正式 SRT 内容：true 必须对应至少
+  1 个合法 cue，false 必须对应合法空 SRT，不一致、损坏或缺字段均不复用且不删除旧产物。
 - 启动器只选择一个真实 Python，优先仓库/资产根虚拟环境，再取 PATH 中首个非 WindowsApps
   Application；资产根缺失时列出缺失项并给出可复制的用户级 `LIVECLIP_ASSETS_ROOT` 示例，
   不再要求用户关闭 Windows 应用执行别名。
@@ -150,8 +151,11 @@
 - 原视频、timeline、analysis 前后 SHA-256 不变；真实媒体、review、输出与三点抽帧均被
   Git 忽略。受控 PATH 同时放入真实 Python 与 WindowsApps 路径 Python 后，生产解析器只
   选中一个真实 Python，且 `liveclip --help` 启动成功。
-- 定向回归 66 passed、0 failed；source-only 为基础 224 passed/1 deselected、ASR
-  91 passed/2 deselected，均 0 failed，`pip check` 通过。未执行 TASK-008。
+- FIX 使用两层 FFmpeg filtergraph 转义并保持 `shell=False`；盘符冒号、中文、空格、`&`、
+  圆括号和单引号组合路径已通过生产 exporter 的 15 秒真实烧录，移走 SRT 后 MP4 字幕像素
+  仍存在，SRT 与 timeline 一致，三项输入哈希不变且无 `.part`。
+- FIX 后定向回归 75 passed、媒体集成 2 passed；source-only 为基础 233 passed/1 deselected、
+  ASR 91 passed/2 deselected，均 0 failed，`pip check` 通过。未执行 TASK-008。
 
 ## TASK-GIT-001
 
@@ -239,11 +243,13 @@
 - TASK-004 已通过独立审核并合并；其候选在 TASK-005 中仍全部默认待审核。
 - TASK-005 已通过独立审核并合并。
 - TASK-006 已通过独立审核并合并；PR #8 是 TASK-007 的最新 `master` 基线。
-- TASK-007 本地实现、自动测试和真实验证已完成，等待 Draft PR 三项检查。
+- TASK-007-FIX 本地实现、自动测试和真实特殊路径验证已完成；等待同一 Draft PR 三项检查，
+  之后仍需新的独立复审结论。
 
 ## 建议下一步
 
-- 下一步只继续 TASK-007 的 Draft PR 三项 Actions 与交接；保持 Draft，不执行 TASK-008。
+- 下一步只继续 TASK-007-FIX 的 Draft PR 三项 Actions 与交接，再进行独立复审；保持 Draft，
+  不执行 TASK-008。
 
 ## 约束核验
 

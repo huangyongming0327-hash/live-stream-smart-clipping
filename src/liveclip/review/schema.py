@@ -12,7 +12,14 @@ from typing import Any, Callable
 
 from liveclip.analysis.schema import validate_analysis
 from liveclip.asr.timeline import validate_timeline
-from liveclip.media import FFmpegPaths, MediaProbe, probe_media, resolve_ffmpeg_paths
+from liveclip.media import (
+    FFmpegPaths,
+    MediaProbe,
+    SubtitleError,
+    parse_srt_text,
+    probe_media,
+    resolve_ffmpeg_paths,
+)
 
 
 MAX_DURATION_MISMATCH_MS = 1_000
@@ -231,6 +238,21 @@ def find_candidate(inputs: ReviewInputs, candidate_id: Any) -> dict[str, Any]:
     raise ReviewError("所选候选不存在。")
 
 
+def completed_subtitle_state_matches(
+    subtitle_path: Path,
+    subtitles_burned_in: bool,
+) -> bool:
+    """Validate that a completed review's burn-in flag matches its formal SRT."""
+
+    if not isinstance(subtitles_burned_in, bool) or not subtitle_path.is_file():
+        return False
+    try:
+        cues = parse_srt_text(subtitle_path.read_text(encoding="utf-8-sig"))
+    except (OSError, UnicodeDecodeError, SubtitleError):
+        return False
+    return bool(cues) is subtitles_burned_in
+
+
 def load_completed_export(inputs: ReviewInputs) -> CompletedExport | None:
     """Return a matching completed export without trusting arbitrary paths."""
 
@@ -268,6 +290,11 @@ def load_completed_export(inputs: ReviewInputs) -> CompletedExport | None:
         video_name = export.get("video_file_name")
         subtitle_name = export.get("subtitle_file_name")
         subtitles_burned_in = export.get("subtitles_burned_in")
+        subtitle_path = (
+            inputs.output_dir / subtitle_name
+            if isinstance(subtitle_name, str)
+            else None
+        )
         if (
             not isinstance(video_name, str)
             or not video_name
@@ -277,7 +304,11 @@ def load_completed_export(inputs: ReviewInputs) -> CompletedExport | None:
             or Path(subtitle_name).name != subtitle_name
             or not isinstance(subtitles_burned_in, bool)
             or not (inputs.output_dir / video_name).is_file()
-            or not (inputs.output_dir / subtitle_name).is_file()
+            or subtitle_path is None
+            or not completed_subtitle_state_matches(
+                subtitle_path,
+                subtitles_burned_in,
+            )
         ):
             return None
         return CompletedExport(

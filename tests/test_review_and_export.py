@@ -39,6 +39,7 @@ from liveclip.review.schema import (
     validate_clip_range,
 )
 from liveclip.review import server as server_module
+from liveclip.review import exporter as exporter_module
 from liveclip.review.server import STATIC_ROOT, create_review_server
 
 
@@ -402,7 +403,7 @@ def test_fake_ffmpeg_ffprobe_success_publishes_mp4_srt_and_review(tmp_path: Path
     assert command[command.index("-b:a") + 1] == "160k"
     assert command[command.index("-movflags") + 1] == "+faststart"
     subtitle_filter = command[command.index("-vf") + 1]
-    assert "subtitles=filename='" in subtitle_filter
+    assert "subtitles=filename=" in subtitle_filter
     assert "FontName=Microsoft YaHei" in subtitle_filter
     assert "FontSize=9.6" in subtitle_filter
     assert "PrimaryColour=&H00FFFFFF" in subtitle_filter
@@ -453,11 +454,11 @@ def test_subtitle_font_size_uses_only_three_height_bands(height: int, expected: 
     assert subtitle_font_size(height) == expected
 
 
-def test_subtitle_filter_escapes_chinese_space_ampersand_parentheses_and_drive(
+def test_subtitle_filter_escapes_windows_special_characters_and_apostrophe(
     tmp_path: Path,
 ) -> None:
     inputs, fake_probe, paths = make_review_inputs(tmp_path)
-    inputs = replace(inputs, output_dir=tmp_path / "中文 空格 & (括号)")
+    inputs = replace(inputs, output_dir=tmp_path / "中文 空格 & (括号) O'Brien")
     fake_ffmpeg = FakeFFmpeg()
     export_review_clip(
         inputs,
@@ -471,8 +472,8 @@ def test_subtitle_filter_escapes_chinese_space_ampersand_parentheses_and_drive(
     )
     command = fake_ffmpeg.calls[0]
     subtitle_filter = command[command.index("-vf") + 1]
-    assert "中文 空格 & (括号)" in subtitle_filter
-    assert "\\:" in subtitle_filter
+    assert r"中文 空格 & (括号) O\\\'Brien" in subtitle_filter
+    assert r"\\:" in subtitle_filter
     assert "\\" in subtitle_filter
 
 
@@ -497,6 +498,48 @@ def test_empty_srt_exports_without_filter_and_records_no_burn_in(tmp_path: Path)
     assert command[command.index("-vf") + 1] == "setpts=PTS-STARTPTS"
     review = json.loads(inputs.review_path.read_text(encoding="utf-8"))
     assert review["export"]["subtitles_burned_in"] is False
+    completed = load_completed_export(inputs)
+    assert completed is not None
+    assert completed.subtitles_burned_in is False
+
+
+@pytest.mark.parametrize(
+    ("subtitles_burned_in", "srt_text"),
+    [
+        (True, ""),
+        (False, "1\n00:00:00,000 --> 00:00:01,000\n合成字幕\n"),
+        (True, "not valid srt"),
+        (False, "not valid srt"),
+    ],
+)
+def test_inconsistent_or_invalid_completed_srt_is_not_reused_or_deleted(
+    tmp_path: Path,
+    subtitles_burned_in: bool,
+    srt_text: str,
+) -> None:
+    inputs, fake_probe, paths = make_review_inputs(tmp_path)
+    result = export_review_clip(
+        inputs,
+        candidate_id="clip-001",
+        start_ms=4_000,
+        end_ms=22_500,
+        confirmed=True,
+        paths=paths,
+        process_function=FakeFFmpeg(),
+        probe_function=fake_probe,
+    )
+    review = json.loads(inputs.review_path.read_text(encoding="utf-8"))
+    review["export"]["subtitles_burned_in"] = subtitles_burned_in
+    inputs.review_path.write_bytes(_json_bytes(review))
+    result.subtitle_path.write_text(srt_text, encoding="utf-8", newline="\n")
+    before = {
+        inputs.review_path: inputs.review_path.read_bytes(),
+        result.video_path: result.video_path.read_bytes(),
+        result.subtitle_path: result.subtitle_path.read_bytes(),
+    }
+
+    assert load_completed_export(inputs) is None
+    assert {path: path.read_bytes() for path in before} == before
 
 
 def test_existing_output_files_are_never_overwritten(tmp_path: Path) -> None:
@@ -570,6 +613,51 @@ def test_invalid_export_codec_is_not_published(tmp_path: Path) -> None:
             probe_function=bad_probe,
         )
     assert not inputs.review_path.exists()
+
+
+@pytest.mark.parametrize("failure_step", ["video", "subtitle", "review"])
+def test_publish_failure_rolls_back_outputs_and_preserves_old_review(
+    tmp_path: Path,
+    monkeypatch: Any,
+    failure_step: str,
+) -> None:
+    inputs, fake_probe, paths = make_review_inputs(tmp_path)
+    inputs.review_path.write_bytes(b"old-review")
+    publish_calls = 0
+    original_publish = exporter_module.publish_without_overwrite
+    original_replace = exporter_module.os.replace
+
+    def publish(source: Path, destination: Path) -> None:
+        nonlocal publish_calls
+        publish_calls += 1
+        if (failure_step == "video" and publish_calls == 1) or (
+            failure_step == "subtitle" and publish_calls == 2
+        ):
+            raise OSError("synthetic publish failure")
+        original_publish(source, destination)
+
+    def replace(source: Path, destination: Path) -> None:
+        if failure_step == "review":
+            raise OSError("synthetic review publish failure")
+        original_replace(source, destination)
+
+    monkeypatch.setattr(exporter_module, "publish_without_overwrite", publish)
+    monkeypatch.setattr(exporter_module.os, "replace", replace)
+
+    with pytest.raises(ReviewError, match="未发布完成结果"):
+        export_review_clip(
+            inputs,
+            candidate_id="clip-001",
+            start_ms=4_000,
+            end_ms=22_500,
+            confirmed=True,
+            paths=paths,
+            process_function=FakeFFmpeg(),
+            probe_function=fake_probe,
+        )
+
+    assert inputs.review_path.read_bytes() == b"old-review"
+    assert list(inputs.output_dir.glob("*")) == []
 
 
 def test_source_change_during_export_blocks_publication(tmp_path: Path) -> None:
@@ -736,7 +824,10 @@ def test_existing_completed_review_is_displayed_without_absolute_paths(tmp_path:
     video_name = "真实 直播_clip-001.mp4"
     subtitle_name = "真实 直播_clip-001.srt"
     (inputs.output_dir / video_name).write_bytes(b"video")
-    (inputs.output_dir / subtitle_name).write_text("", encoding="utf-8")
+    (inputs.output_dir / subtitle_name).write_text(
+        "1\n00:00:00,000 --> 00:00:01,000\n合成字幕\n",
+        encoding="utf-8",
+    )
     payload = {
         "schema_version": "1.0",
         "source": {

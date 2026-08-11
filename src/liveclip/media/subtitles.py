@@ -165,11 +165,15 @@ def retime_srt(
 
 
 def escape_subtitles_path(path: str | Path) -> str:
-    """Escape a Windows path for FFmpeg's subtitles filter parser."""
+    """Escape a path through the option-value and filtergraph parser layers."""
 
     value = Path(path).resolve().as_posix()
-    value = value.replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
-    return f"filename='{value}'"
+    for special_characters in ("\\':", "\\'[],;"):
+        value = "".join(
+            f"\\{character}" if character in special_characters else character
+            for character in value
+        )
+    return f"filename={value}"
 
 
 def burn_subtitles(

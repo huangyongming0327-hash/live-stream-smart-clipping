@@ -17,7 +17,7 @@ from liveclip.asr.adapters import ASRAdapterError, Engine, model_identity
 from liveclip.asr.pipeline import run_transcription
 from liveclip.media import FFmpegPaths, MediaProbe, probe_media, resolve_ffmpeg_paths
 from liveclip.review.server import launch_review
-from liveclip.review.schema import sha256_file
+from liveclip.review.schema import completed_subtitle_state_matches, sha256_file
 
 from .status import StageStatus, write_pipeline_status
 
@@ -230,7 +230,10 @@ def _completed_review_matches(
             and isinstance(subtitle_file_name, str)
             and Path(subtitle_file_name).name == subtitle_file_name
             and (output_dir / video_file_name).is_file()
-            and (output_dir / subtitle_file_name).is_file()
+            and completed_subtitle_state_matches(
+                output_dir / subtitle_file_name,
+                export.get("subtitles_burned_in"),
+            )
         )
     except (OSError, UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError):
         return False

@@ -79,7 +79,34 @@ ASR 或文本模型。通过真实审核页面选择、预览、确认并导出�
 本任务仍只处理单视频、单候选导出；不做批量、多片段拼接、字幕编辑、翻译/纠错/改写、竖屏
 转换、队列、安装包或自动发布。Draft PR 保持 Draft，不启用 auto-merge、不 merge、不 force push。
 
-## 9. 下一步
+## 9. TASK-007-FIX｜单引号路径与完成态一致性
 
-发布 Draft PR 后只验证 latest-head 三项 Actions 并生成完整 PR handoff；是否进入独立审核、何时
-Ready 或合并继续由用户决定。本任务不执行 TASK-008。
+独立审核发现的 B-1 根因是字幕路径只按滤镜选项值转义一次，并把 filename 整体放在单引号
+内；路径本身出现单引号时会提前结束引用，后续 `force_style` 被误解析。FIX 依照 FFmpeg 的两层
+解析顺序，先转义字幕滤镜 option value 的反斜杠、单引号和冒号，再转义 filtergraph 层的
+反斜杠、单引号、方括号、逗号和分号。参数仍以列表交给 `shell=False`，没有 shell 拼接、固定
+长期字幕副本或路径禁用规则；H.264/AAC、固定字幕样式、原子发布和失败回滚逻辑未改变。
+
+新增 Windows 真实 FFmpeg 集成回归，在同一路径中组合盘符冒号、中文、空格、`&`、圆括号和
+单引号，使用生产 `export_review_clip()` 完成 15 秒非空字幕烧录。输出通过 H.264/AAC 校验，
+正式 SRT 与最终 timeline 范围逐字符、逐时间一致且为 1 cue；临时移走同名 SRT 后，仅解码 MP4
+的活跃字幕时点仍检测到明显非黑画面像素，证明字幕已经写进视频。原视频、timeline、analysis
+哈希前后不变，成功后无 `.part` 残留。既有中文空格媒体集成也继续通过。
+
+N-1 通过同一个只读校验函数同时收紧 review loader 和 pipeline runner：
+
+- `subtitles_burned_in=true` 只接受可读取、语法合法且至少包含 1 cue 的正式 SRT；
+- `subtitles_burned_in=false` 只接受可读取、语法合法且解析为 0 cue 的正式 SRT；
+- `true + 空 SRT`、`false + 非空 SRT` 及损坏 SRT 均不复用 completed review；
+- 缺少字段的旧 review 仍不复用；拒绝复用只返回 pending，不删除或改写旧 review、MP4、SRT。
+
+FIX 后定向回归为 75 passed、0 failed；Windows 真实 FFmpeg 媒体集成为 2 passed、0 failed；
+source-only base-schema-media 为 233 passed、1 deselected，ASR experiments 为 91 passed、
+2 deselected、1 个既有 deprecation warning，`pip check` 无损坏依赖，三个 stage 退出码均为 0。
+修复提交的 latest-head 三项 Actions 不在提交前预先宣称，最终状态以 PR handoff 为准。
+
+## 10. 下一步
+
+发布 FIX 到同一 Draft PR 后只验证 latest-head 三项 Actions 并生成完整 PR handoff。由于现有
+AUDIT 仍为 84/100 且结论要求 FIX，本次即使 Actions 全绿也不得 Ready 或合并；必须再次独立
+复审并形成新的复审结论。本任务不执行 TASK-008。
