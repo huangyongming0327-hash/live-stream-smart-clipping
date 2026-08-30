@@ -390,6 +390,7 @@ class ReviewRequestHandler(BaseHTTPRequestHandler):
                 final_end_ms=payload["end_ms"],
                 duration_ms=result.duration_ms,
                 output_folder_name=self.app.inputs.output_dir.name or "exports",
+                subtitles_burned_in=result.subtitles_burned_in,
             )
             message = "导出完成。"
             if result.subtitle_count == 0:
@@ -403,6 +404,7 @@ class ReviewRequestHandler(BaseHTTPRequestHandler):
                     "video_file_name": result.video_path.name,
                     "subtitle_file_name": result.subtitle_path.name,
                     "subtitle_count": result.subtitle_count,
+                    "subtitles_burned_in": result.subtitles_burned_in,
                     "duration_ms": result.duration_ms,
                     "final_start_ms": payload["start_ms"],
                     "final_end_ms": payload["end_ms"],

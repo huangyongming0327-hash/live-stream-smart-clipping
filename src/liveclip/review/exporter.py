@@ -17,6 +17,7 @@ from liveclip.media.outputs import (
     temporary_sibling,
 )
 from liveclip.media.process_runner import ProcessResult, run_process
+from liveclip.media.subtitles import escape_subtitles_path
 
 from .schema import (
     ReviewConflictError,
@@ -36,10 +37,54 @@ class ExportResult:
     subtitle_count: int
     duration_ms: int
     elapsed_seconds: float
+    subtitles_burned_in: bool
 
 
 ProcessFunction = Callable[..., ProcessResult]
 ProbeFunction = Callable[..., Any]
+
+
+def subtitle_font_size(video_height: int) -> int:
+    """Return one of the three fixed target pixel sizes for the source height."""
+
+    if (
+        isinstance(video_height, bool)
+        or not isinstance(video_height, int)
+        or video_height <= 0
+    ):
+        raise ReviewError("视频高度必须是正整数。")
+    if video_height <= 720:
+        return 24
+    if video_height <= 1_440:
+        return 28
+    return 32
+
+
+def _ass_value(target_pixels: float, video_height: int) -> str:
+    """Scale target pixels to libass's 288-row SRT script coordinate space."""
+
+    value = target_pixels * 288 / video_height
+    return f"{value:.3f}".rstrip("0").rstrip(".")
+
+
+def _subtitle_filter(subtitle_path: Path, video_height: int) -> str:
+    font_size = subtitle_font_size(video_height)
+    horizontal_margin = {24: 32, 28: 48, 32: 60}[font_size]
+    vertical_margin = {24: 48, 28: 72, 32: 96}[font_size]
+    outline = {24: 2, 28: 2.5, 32: 3}[font_size]
+    style = (
+        f"FontName=Microsoft YaHei,FontSize={_ass_value(font_size, video_height)},"
+        "PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,"
+        "BackColour=&H00000000,BorderStyle=1,"
+        f"Outline={_ass_value(outline, video_height)},Shadow=0,Alignment=2,"
+        f"MarginL={_ass_value(horizontal_margin, video_height)},"
+        f"MarginR={_ass_value(horizontal_margin, video_height)},"
+        f"MarginV={_ass_value(vertical_margin, video_height)},WrapStyle=0"
+    )
+    return (
+        f"subtitles={escape_subtitles_path(subtitle_path)}:charenc=UTF-8:"
+        f"force_style='{style}',setpts=PTS-STARTPTS"
+    )
 
 
 def format_srt_milliseconds(value: int) -> str:
@@ -97,6 +142,7 @@ def _ffmpeg_arguments(
     *,
     start_ms: int,
     end_ms: int,
+    subtitle_path: Path | None,
 ) -> tuple[str | Path, ...]:
     duration_ms = end_ms - start_ms
     arguments: list[str | Path] = [
@@ -104,6 +150,8 @@ def _ffmpeg_arguments(
         "-hide_banner",
         "-loglevel",
         "error",
+        "-ss",
+        f"{start_ms / 1000:.3f}",
         "-i",
         inputs.video_path,
     ]
@@ -118,14 +166,20 @@ def _ffmpeg_arguments(
         )
     arguments.extend(
         (
-            "-ss",
-            f"{start_ms / 1000:.3f}",
             "-t",
             f"{duration_ms / 1000:.3f}",
             "-map",
             "0:v:0",
             "-map",
             "0:a:0" if inputs.has_audio else "1:a:0",
+            "-vf",
+            (
+                _subtitle_filter(subtitle_path, inputs.video_height)
+                if subtitle_path is not None
+                else "setpts=PTS-STARTPTS"
+            ),
+            "-af",
+            "asetpts=PTS-STARTPTS",
             "-c:v",
             "libx264",
             "-preset",
@@ -158,6 +212,7 @@ def _build_review_document(
     end_ms: int,
     video_file_name: str,
     subtitle_file_name: str,
+    subtitles_burned_in: bool,
     reviewed_at: datetime,
 ) -> dict[str, Any]:
     timestamp = reviewed_at.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -183,8 +238,20 @@ def _build_review_document(
             "video_file_name": video_file_name,
             "subtitle_file_name": subtitle_file_name,
             "completed": True,
+            "subtitles_burned_in": subtitles_burned_in,
         },
     }
+
+
+def _inputs_match_bound_hashes(inputs: ReviewInputs) -> bool:
+    try:
+        return (
+            sha256_file(inputs.video_path) == inputs.video_sha256
+            and sha256_file(inputs.timeline_path) == inputs.timeline_sha256
+            and sha256_file(inputs.analysis_path) == inputs.analysis_sha256
+        )
+    except OSError:
+        return False
 
 
 def export_review_clip(
@@ -225,8 +292,18 @@ def export_review_clip(
     published: list[Path] = []
     process_result: ProcessResult | None = None
     try:
-        if sha256_file(inputs.video_path) != inputs.video_sha256:
-            raise ReviewError("原视频在审核期间发生变化，已停止导出。")
+        if not _inputs_match_bound_hashes(inputs):
+            raise ReviewError(
+                "原视频在审核期间发生变化，或 timeline/analysis 已变化，已停止导出。"
+            )
+
+        srt_text, subtitle_count = render_timeline_srt(
+            inputs.timeline,
+            start_ms,
+            end_ms,
+        )
+        temporary_subtitle.write_text(srt_text, encoding="utf-8", newline="\n")
+        subtitles_burned_in = subtitle_count > 0
 
         try:
             process_result = process_function(
@@ -236,6 +313,7 @@ def export_review_clip(
                     temporary_video,
                     start_ms=start_ms,
                     end_ms=end_ms,
+                    subtitle_path=(temporary_subtitle if subtitles_burned_in else None),
                 ),
                 timeout_seconds=timeout_seconds,
             )
@@ -265,15 +343,10 @@ def export_review_clip(
             or abs(probed_duration_ms - target_duration_ms) > 1_000
         ):
             raise ReviewError("导出视频的流格式或时长校验失败。")
-        if sha256_file(inputs.video_path) != inputs.video_sha256:
-            raise ReviewError("原视频在导出期间发生变化，未发布任何完成结果。")
-
-        srt_text, subtitle_count = render_timeline_srt(
-            inputs.timeline,
-            start_ms,
-            end_ms,
-        )
-        temporary_subtitle.write_text(srt_text, encoding="utf-8", newline="\n")
+        if not _inputs_match_bound_hashes(inputs):
+            raise ReviewError(
+                "原视频在导出期间发生变化，或 timeline/analysis 已变化，未发布任何完成结果。"
+            )
         review_document = _build_review_document(
             inputs,
             candidate,
@@ -281,6 +354,7 @@ def export_review_clip(
             end_ms=end_ms,
             video_file_name=video_name,
             subtitle_file_name=subtitle_name,
+            subtitles_burned_in=subtitles_burned_in,
             reviewed_at=now_function(),
         )
         temporary_review.write_text(
@@ -301,6 +375,7 @@ def export_review_clip(
             subtitle_count=subtitle_count,
             duration_ms=target_duration_ms,
             elapsed_seconds=(process_result.elapsed_seconds if process_result else 0.0),
+            subtitles_burned_in=subtitles_burned_in,
         )
     except ReviewError:
         for path in reversed(published):

@@ -98,9 +98,13 @@ function setRange(startMs, endMs) {
 
 function exportDetailsMessage(exported, prefix) {
   if (!exported) return "";
+  const videoSubtitle = exported.subtitles_burned_in
+    ? "视频字幕：已烧录"
+    : "本片段没有可烧录字幕";
   return `${prefix} MP4：${exported.video_file_name}；SRT：${exported.subtitle_file_name}；` +
     `最终范围：${formatClock(exported.final_start_ms)} – ${formatClock(exported.final_end_ms)}；` +
-    `实际时长：${seconds(exported.duration_ms)} 秒；输出文件夹：${exported.output_folder_name}。`;
+    `实际时长：${seconds(exported.duration_ms)} 秒；${videoSubtitle}；` +
+    `独立字幕：已生成；输出文件夹：${exported.output_folder_name}。`;
 }
 
 function makeText(className, text) {
@@ -250,9 +254,8 @@ elements.exportButton.addEventListener("click", async () => {
     });
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.error || "导出失败。");
-    const subtitleMessage = payload.subtitle_count === 0 ? "该范围没有字幕。" : `字幕 ${payload.subtitle_count} 条。`;
     await loadSession();
-    elements.exportMessage.textContent = `${exportDetailsMessage(payload, payload.message)} ${subtitleMessage}`;
+    elements.exportMessage.textContent = exportDetailsMessage(payload, payload.message);
   } catch (error) {
     elements.exportMessage.textContent = error.message || "导出失败。";
   } finally {

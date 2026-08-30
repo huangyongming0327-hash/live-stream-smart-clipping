@@ -290,9 +290,11 @@ def test_prepare_output_protects_same_name(tmp_path: Path) -> None:
 
 
 def test_windows_subtitle_filter_path_escaping() -> None:
-    escaped = escape_subtitles_path(Path(r"D:\媒体 测试\中文 字幕.srt"))
-    assert escaped.startswith("filename='D\\:/")
-    assert "媒体 测试/中文 字幕.srt" in escaped
+    escaped = escape_subtitles_path(
+        Path(r"D:\中文 空格 & (括号) O'Brien\中文 字幕.srt")
+    )
+    assert escaped.startswith(r"filename=D\\:/")
+    assert r"中文 空格 & (括号) O\\\'Brien/中文 字幕.srt" in escaped
 
 
 def test_export_validation_returns_structured_missing_file(tmp_path: Path) -> None:

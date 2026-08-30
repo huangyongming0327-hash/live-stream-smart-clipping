@@ -421,7 +421,10 @@ def test_completed_review_is_reused_but_review_page_still_opens(tmp_path: Path) 
     output = workdir / "exports"
     output.mkdir()
     (output / "source_candidate-001.mp4").write_bytes(b"video")
-    (output / "source_candidate-001.srt").write_text("", encoding="utf-8")
+    (output / "source_candidate-001.srt").write_text(
+        "1\n00:00:00,000 --> 00:00:01,000\n合成字幕\n",
+        encoding="utf-8",
+    )
     review = {
         "schema_version": "1.0",
         "source": {
@@ -444,6 +447,7 @@ def test_completed_review_is_reused_but_review_page_still_opens(tmp_path: Path) 
             "video_file_name": "source_candidate-001.mp4",
             "subtitle_file_name": "source_candidate-001.srt",
             "completed": True,
+            "subtitles_burned_in": True,
         },
     }
     atomic_write_json(workdir / "review_current.json", review)
@@ -461,6 +465,80 @@ def test_completed_review_is_reused_but_review_page_still_opens(tmp_path: Path) 
     assert result.review_completed is True
     assert status["stages"]["review"] == "completed"
     assert any("已复用，打开此前审核结果" in message for message in messages)
+
+
+@pytest.mark.parametrize(
+    ("subtitles_burned_in", "srt_text"),
+    [
+        (True, ""),
+        (False, "1\n00:00:00,000 --> 00:00:01,000\n合成字幕\n"),
+    ],
+)
+def test_inconsistent_completed_subtitle_state_is_not_reused_or_deleted(
+    tmp_path: Path,
+    subtitles_burned_in: bool,
+    srt_text: str,
+) -> None:
+    video = tmp_path / "source.mp4"
+    video.write_bytes(b"video")
+    workdir = tmp_path / "work"
+    timeline_path = write_timeline(video, workdir)
+    analysis_path = write_analysis(workdir)
+    output = workdir / "exports"
+    output.mkdir()
+    video_output = output / "source_candidate-001.mp4"
+    subtitle_output = output / "source_candidate-001.srt"
+    video_output.write_bytes(b"video")
+    subtitle_output.write_text(srt_text, encoding="utf-8", newline="\n")
+    review = {
+        "schema_version": "1.0",
+        "source": {
+            "analysis_file_name": analysis_path.name,
+            "analysis_sha256": hashlib.sha256(analysis_path.read_bytes()).hexdigest(),
+            "timeline_file_name": timeline_path.name,
+            "timeline_sha256": hashlib.sha256(timeline_path.read_bytes()).hexdigest(),
+            "video_file_name": video.name,
+        },
+        "review": {
+            "candidate_id": "candidate-001",
+            "approved": True,
+            "original_start_ms": 0,
+            "original_end_ms": 30_000,
+            "final_start_ms": 1_000,
+            "final_end_ms": 29_000,
+            "reviewed_at": "2026-08-11T00:00:00Z",
+        },
+        "export": {
+            "video_file_name": video_output.name,
+            "subtitle_file_name": subtitle_output.name,
+            "completed": True,
+            "subtitles_burned_in": subtitles_burned_in,
+        },
+    }
+    review_path = workdir / "review_current.json"
+    atomic_write_json(review_path, review)
+    before = {
+        review_path: review_path.read_bytes(),
+        video_output: video_output.read_bytes(),
+        subtitle_output: subtitle_output.read_bytes(),
+    }
+    calls: list[str] = []
+    messages: list[str] = []
+
+    result = run_pipeline(
+        video,
+        workdir=workdir,
+        review_function=lambda *_a, **_k: calls.append("review"),
+        progress=messages.append,
+        **dependencies(tmp_path),
+    )
+
+    status = json.loads((workdir / "pipeline_status.json").read_text(encoding="utf-8"))
+    assert calls == ["review"]
+    assert result.review_completed is False
+    assert status["stages"]["review"] == "pending"
+    assert any("人工审核与导出：开始" in message for message in messages)
+    assert {path: path.read_bytes() for path in before} == before
 
 
 def test_windows_launcher_is_native_bounded_and_cancel_safe() -> None:
