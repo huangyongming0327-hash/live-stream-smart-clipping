@@ -1,5 +1,113 @@
 # TASK-007-R AUDIT｜字幕烧录与启动器稳健性独立审核
 
+## 1. FIX 后复审当前结论
+
+- 复审名称：`TASK-007-R2`
+- 仓库：`huangyongming0327-hash/live-stream-smart-clipping`
+- PR：`#9`
+- 分支：`task/TASK-007-subtitle-burnin-launcher-fix`
+- 当前审核 HEAD：`c0deea6d130b0cbc7633c7ca9a9be3c67d180ab9`
+- 复审日期：2026-08-30
+- 当前阻断状态：无未关闭阻断
+- B-1 状态：已关闭
+- N-1 状态：已关闭
+- 复审性质：对 FIX 后实现独立重跑真实 FFmpeg、完成态矩阵、自动测试与范围检查；没有修改
+  实现代码、测试、RESULT、README、CURRENT_STATUS 或首审历史
+
+**总分：98/100**
+
+**最终结论：通过，保持Draft等待用户决定**
+
+FIX 后实现解决了首审记录的两个问题。生产 `export_review_clip()` 已在同时包含盘符冒号、中文、
+空格、`&`、圆括号和单引号的真实 Windows 路径下完成字幕烧录；completed review 的布尔字段与
+正式 SRT 内容不一致或损坏时，review loader 和 pipeline runner 均不再复用。当前没有一票否决
+项。本次复审只形成审核结论，不执行 Ready、merge、auto-merge 或 TASK-008。
+
+## 2. 当前阻断问题
+
+未发现未关闭阻断问题。首审 B-1 已由真实特殊路径回归关闭；首审 N-1 已由完成态矩阵关闭。
+
+## 3. FIX 后复审｜B-1 关闭证据
+
+- 在全新受控审核目录生成 15 秒、960×540、H.264/AAC 合成输入；目录路径同时包含 Windows
+  盘符冒号、中文、空格、`&`、圆括号和单引号，没有用路径限制或移除字符规避问题。
+- 直接调用生产 `export_review_clip()` 和项目现有真实 Windows FFmpeg/ffprobe；进程路径仍由
+  参数列表传递且 `shell=False`，没有 shell 拼接或长期固定字幕副本。
+- 正式输出成功：review 为 completed，`subtitles_burned_in=true`，正式 SRT 为合法 1 cue；
+  ffprobe 确认视频为 H.264、音频为 AAC，容器时长 15.022 秒。
+- 没有把生产 `render_timeline_srt()` 当作预期值；依据审核输入独立写出预期的单 cue、0—15 秒
+  SRT，正式 SRT 的序号、开始/结束毫秒和文本逐字符完全一致。
+- 临时把同名 SRT 移为非 `.srt` 后，仅从 MP4 的 7.5 秒位置抽帧。人工查看可清晰看到底部
+  居中的白字黑边字幕；同一帧的独立 `signalstats` 得到 `YMAX=242`，而合成底色为深色，证明
+  可见文字来自 MP4 画面，不是播放器或 FFmpeg 自动读取同名 SRT。检查后 SRT 已原样恢复。
+- 原视频、timeline、analysis 的 SHA-256 在导出及移走/恢复 SRT 前后完全不变；审核目录没有
+  `.part`，也没有遗留 `.r2-hold`。因此 B-1 从阻断改为已关闭。
+- 仓库新增的 Windows 真实 FFmpeg 单引号路径集成回归另行独立运行，1 passed、0 failed。
+
+## 4. FIX 后复审｜N-1 关闭证据
+
+使用同一份匹配当前输入哈希和候选范围的 completed review，分别构造下列状态。每个场景都同时
+调用 `load_completed_export()` 与 pipeline runner 的完成态判定，并对调用前后的 review、MP4、
+SRT 字节进行比较：
+
+| 场景 | review loader | pipeline runner | 文件保护 |
+|---|---|---|---|
+| `true + 合法非空 SRT` | 可复用 | 可复用 | 三文件不变 |
+| `false + 合法空 SRT` | 可复用 | 可复用 | 三文件不变 |
+| `true + 空 SRT` | 不复用 | 不复用 | 三文件不变 |
+| `false + 合法非空 SRT` | 不复用 | 不复用 | 三文件不变 |
+| `true + 损坏 SRT` | 不复用 | 不复用 | 三文件不变 |
+| `false + 损坏 SRT` | 不复用 | 不复用 | 三文件不变 |
+| 旧 review 缺 `subtitles_burned_in` | 不复用 | 不复用 | 三文件不变 |
+
+实现只读取 UTF-8-SIG SRT 并用既有严格解析器判断 cue 数；合法非空与严格 `true` 对应，合法空
+与严格 `false` 对应。拒绝复用只返回未完成状态，不删除、覆盖或改写旧 review、MP4 或 SRT。
+因此 N-1 已关闭。
+
+## 5. FIX 后复审｜测试、Actions 与边界
+
+- 指定定向回归：75 passed，0 failed。
+- source-only base-schema-media：233 passed，1 deselected，0 failed，退出码 0。
+- source-only asr-experiments：91 passed，2 deselected，1 个既有 `audioop` deprecation warning，
+  0 failed，退出码 0。
+- `pip check`：`No broken requirements found.`，退出码 0；最终
+  `SOURCE_ONLY_RESULT.status=passed`。
+- 实现 HEAD 对应 run `31473820980` 的 `repository-safety`、`lightweight-tests`、
+  `task-report-gate` 均 completed/SUCCESS。逐 job 阅读完整 607 行日志，0 个真实失败信号；安全
+  日志为 191 files scanned、191 text files、0 issue。
+- 本地 tracked safety 再次为 191/191、0 issue；`git diff --check` 无问题。
+- PR 文件范围没有进入 `src/liveclip/asr/`、`src/liveclip/analysis/`，没有字幕样式改动、字幕
+  编辑器、批量、多片段拼接、自动发布或 TASK-008。
+- R2 真实/合成产物均留在非 tracked 审核目录；报告不包含本地绝对路径、真实用户字幕正文、
+  媒体、模型、凭据或密钥。
+
+## 6. FIX 后复审评分
+
+| 维度 | 得分 |
+|---|---:|
+| 字幕烧录真实可用性 | 25/25 |
+| 字幕时间、文本与视觉质量 | 14/15 |
+| 导出失败安全与用户文件保护 | 15/15 |
+| Windows 启动器稳健性 | 15/15 |
+| 测试与真实验证 | 10/10 |
+| 代码简洁与维护性 | 9/10 |
+| 隐私与 Git 边界 | 5/5 |
+| 文档与可追溯性 | 5/5 |
+| **当前总分** | **98/100** |
+
+扣除 2 分是因为 R2 只针对 FIX 影响面重跑 15 秒合成媒体，没有再次执行首审已完成的 827.766 秒
+全长真实输入人工播放流程；首审对长视频、三处同步、空字幕、失败回滚、启动器和样式的通过
+证据继续有效。B-1 与 N-1 均有本轮独立运行证据，不再构成扣分或阻断。
+
+## 7. FIX 后复审最终建议
+
+当前审核结论为：**通过，保持Draft等待用户决定**。R2 没有执行 Ready、merge 或 auto-merge；
+是否改变 Draft 状态及后续人工合并决定仍由用户处理。本审核不执行 TASK-008。
+
+---
+
+# 第一次审核历史（2026-08-11，以下首审内容原样保留）
+
 ## 1. 审核对象与结论
 
 - 仓库：`huangyongming0327-hash/live-stream-smart-clipping`
