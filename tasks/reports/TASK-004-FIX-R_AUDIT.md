@@ -1,3 +1,194 @@
+# TASK-004-FIX-R AUDIT｜FIX2 后复审
+
+## 1. 当前审核对象与边界
+
+- 仓库：`huangyongming0327-hash/live-stream-smart-clipping`
+- PR：`#10`（复审时为 Draft）
+- 分支：`task/TASK-004-FIX-candidate-tolerance`
+- PR base：`3f92d235b151cd67a6164e250da0883ac4e81a14`
+- 第一次审核实现 HEAD：`5c8d200a78ab5e02e0895ce65a53e2f4032c0cc6`
+- 第一次审核报告后 HEAD：`81d6470746a01bafd5a15cc47d03721cbdc36264`
+- FIX2 最新实现/本次复审 HEAD：`d89449c92b0a2311847f51312b96366258886107`
+- 复审日期：2026-09-05（Asia/Shanghai）
+- 复审方式：逐行复核 FIX2 diff 和相关生产控制流；运行 TASK-004 专项、完整 source-only；以生产 `OpenAICompatibleClient + run_analysis + monkeypatched urllib.request.urlopen` 执行独立 HTTP 矩阵、两窗口隔离、candidate、硬错误及 state 探针；核读 Actions Run `33901795437` 的三个 job 日志。
+- 复审过程仅使用合成 timeline、受控响应和 D 盘临时目录；未调用真实 API 或 ASR，未读取或公开真实字幕、候选文本、API Key、本地媒体或本地分析文件。
+
+指定的 `TASK-004-FIX-R2_HTTP请求预算复审_Codex指令.md` 未出现在当前工作区、另一可用工作区、用户目录、D 盘、PR 树、仓库代码搜索、Issue 或 PR 评论中，因此本报告不虚构已读取该附件。本次复审完整执行了用户当前消息明确列出的 16 项要求，并以仓库内 `tasks/TASK-004-FIX.md`、第一次审核原文及 FIX2 实现为对照。
+
+## 2. 当前结论
+
+总分：**100/100**
+
+审核结论：**通过**
+
+- 当前阻断状态：**无未关闭阻断**
+- B-1：**已关闭**
+- 用户原来的两个 candidate 错误：**继续保持关闭**
+- PR 状态：按用户要求继续保持 Draft；本次复审不 Ready、不 merge、不 auto-merge
+- TASK-008：未执行，继续禁止执行
+
+FIX2 在每个窗口创建独立的两次 HTTP 预算，并由首次请求、transport retry 和唯一 repair 共享。生产客户端只有在即将调用 `urllib.request.urlopen` 前才消费预算并递增 `request_count`。独立探针覆盖的所有单窗口分支均为 1 或 2 个真实 POST，没有第 3 次；两窗口探针分别为 2 次和 2 次，预算没有跨窗口泄漏。
+
+## 3. 当前评分
+
+| 维度 | 得分 | 满分 | FIX2 后复审说明 |
+|---|---:|---:|---|
+| candidate 容错主体 | 30 | 30 | 首次严格，repair 后逐项过滤，全坏时空数组成功；两个原错误继续关闭 |
+| 结构与最终 schema 严格性 | 20 | 20 | JSON、顶层、topics、container 和每窗 3 个上限仍为硬错误，最终仍经 `validate_analysis` |
+| 每窗口请求上限 | 15 | 15 | 生产 HTTP 组合矩阵及两窗口探针证明每窗真实 POST 严格不超过 2 |
+| state、恢复与三版本 | 15 | 15 | 生产客户端中断/恢复通过；current + 2 history 保持 |
+| 测试与回归证据 | 15 | 15 | 50 项专项、完整 source-only、独立探针和指定 latest-head Actions 全绿 |
+| 范围和安全边界 | 5 | 5 | FIX2 范围集中，复审仅修改本 AUDIT，未执行禁止项 |
+| **总分** | **100** | **100** | **通过，B-1 已关闭** |
+
+## 4. 当前阻断问题
+
+未发现未关闭阻断问题。
+
+### B-1｜已关闭｜每窗口生产 HTTP 请求上限
+
+第一次审核发现，业务层两次 `analyze_window` 与生产客户端各自两次 transport attempt 叠加后，单窗口可能出现第 3、4 个 POST。FIX2 现在由 `run_analysis` 在进入每个窗口时新建 `HTTPRequestBudget(limit=2)`，并把同一对象传给首次分析和 repair；`OpenAICompatibleClient._send_with_retry` 的最多尝试次数同时受 transport retry 上限和该预算剩余量限制。
+
+独立生产探针确认：
+
+1. 第一次调用若已经用 timeout/429/5xx + transport retry 消耗两次，随后即使模型内容结构错误也不再 repair；
+2. 首答若只消耗一次并触发 repair，repair 只剩一次 POST，timeout/503 后不会再 transport retry；
+3. 所有实际 `urlopen` 前均同步递增 `request_count`，预算耗尽时不会计入或发出虚假第 3 次；
+4. 每个窗口在循环体内重新创建预算，前一窗口耗尽不会影响后一窗口。
+
+因此 B-1 的复现路径已被生产链路测试反证关闭。
+
+## 5. 生产 HTTP 请求矩阵
+
+以下均通过 `OpenAICompatibleClient + run_analysis + pytest.MonkeyPatch(urllib.request.urlopen)` 执行；`POST` 为实际受控 `urlopen` 调用数，且每次均断言 HTTP method 为 `POST`。
+
+| 场景 | POST | repair 标记 | 结果 | 是否有第 3 次 |
+|---|---:|---|---|---|
+| 首答合法 | 1 | `false` | 成功，输出通过 `validate_analysis` | 否 |
+| 首答结构错误 + repair 成功 | 2 | `false, true` | 成功 | 否 |
+| 首答 timeout + transport retry 成功 | 2 | `false, false` | 成功 | 否 |
+| 首答 timeout + 第 2 次结构错误 | 2 | `false, false` | 预算耗尽失败，不 repair | 否 |
+| 首答结构错误 + repair 第 2 次 timeout | 2 | `false, true` | 网络错误失败，repair 不再 retry | 否 |
+| 首次 429 + transport retry 成功 | 2 | `false, false` | 成功 | 否 |
+| 首次 500 + transport retry 成功 | 2 | `false, false` | 成功 | 否 |
+| 首次 503 + transport retry 成功 | 2 | `false, false` | 成功 | 否 |
+| 首次 429 + 第 2 次结构错误 | 2 | `false, false` | 预算耗尽失败，不 repair | 否 |
+| 首答结构错误 + repair 第 2 次 503 | 2 | `false, true` | HTTP 503 失败，repair 不再 retry | 否 |
+
+每个成功场景均满足 `AnalysisResult.request_count == client.request_count == len(urlopen_calls)`；失败场景无法返回 `AnalysisResult`，但仍满足 `client.request_count == len(urlopen_calls)`。这证明 `request_count` 继续统计真实 POST，而不是业务层逻辑调用。
+
+## 6. 两窗口预算隔离
+
+独立探针构造 61 个连续 10 秒 segment，得到窗口 `1—60` 和窗口 `61`：
+
+- 窗口 1：首次 timeout，transport retry 合法，共 2 个 POST；
+- 窗口 2：首次结构错误，repair 合法，共 2 个 POST；
+- 全任务 `request_count=4`，按窗口分组为 `{1: 2, 61: 2}`；
+- repair 标记依次为 `false, false, false, true`。
+
+若预算跨窗口复用，窗口 2 将无法发送请求；实际两个窗口均成功，证明每窗口预算独立且不泄漏。
+
+## 7. state、恢复与最近 3 个版本
+
+- 生产客户端两窗口探针在窗口 1 成功保存后，于窗口 2 的真实 `urlopen` 处受控中断；state 中 `completed_window_count=1` 且只有一个窗口结果。
+- 使用新的生产客户端恢复后，`resumed_from_window=2`，只为窗口 2 发出 1 个 POST；完成后 `.analysis_work` 被清理。
+- 独立连续发布 5 次空 timeline 后，磁盘上保持 1 个 `current_analysis.json` + 2 个 history，共最近 3 个完整版本。
+- FIX2 未修改发布、回滚、state schema 或最终 `validate_analysis` 路径。
+
+结论：state 保存、恢复和最近 3 版本均未被破坏。
+
+## 8. candidate 原问题与 repair 过滤
+
+独立生产链路 repair 响应同时放入：
+
+- 合法 20 秒、完整属于 topic 1 的 candidate；
+- 10 秒的时长错误 candidate；
+- 横跨两个 topics 的 candidate。
+
+结果只保留合法项，派生 `duration_ms=20000`、`topic_id=topic-001`，最终输出通过 `validate_analysis`，真实 POST 为 2。另一个生产探针只返回时长错误和跨 topic 两个坏项，窗口仍成功并发布 `candidates=[]`，同样只有 2 个 POST。
+
+仓库专项测试还继续覆盖 quote 越界、score 越界和 candidate 字段错误只丢对应项。实现仍只校验并跳过坏项，不延长、缩短、移动、改写 candidate，不改 topic，不猜 segment ID。
+
+结论：
+
+- candidate 时长必须为 15—180 秒：**继续关闭**；
+- candidate 必须完整属于一个 topic：**继续关闭**；
+- repair 后逐项过滤：**没有退化**。
+
+## 9. JSON、topics 与 container 硬错误
+
+生产链路均先以坏首答触发 repair，再让第 2 个 POST 分别返回：
+
+- 非法 JSON；
+- 重叠 topics；
+- 非数组 candidates container；
+- 带额外键的顶层对象。
+
+四类均在 repair 后失败、不生成 `current_analysis.json`，且 `request_count=urlopen_calls=2`。仓库专项测试继续覆盖 topic 引用未知 segment、candidates 超过每窗 3 个等边界。
+
+结论：JSON/topics/container/top-level 硬错误仍必须失败，没有被 candidate 容错吞掉。
+
+## 10. 最新测试与 Actions
+
+### 10.1 本地 TASK-004 专项
+
+在 D 盘项目虚拟环境（Python 3.12.10）前置 PATH 后运行用户指定命令：
+
+```text
+pytest tests/test_semantic_analysis.py -q
+50 passed, 0 failed（exit code 0）
+```
+
+### 10.2 本地完整 source-only
+
+```text
+base-schema-media: 253 passed, 1 deselected, 0 failed
+asr-experiments:   91 passed, 2 deselected, 1 existing warning, 0 failed
+pip check:         No broken requirements found.
+SOURCE_ONLY_RESULT.status=passed
+三个 stage exit_code 均为 0
+```
+
+唯一 warning 仍为 Python 3.13 计划移除 `audioop` 的既有 deprecation warning；未执行真实 ASR 推理。
+
+### 10.3 独立生产链路探针
+
+- 19 组结果全部通过；
+- 10 组 HTTP/重试矩阵覆盖 1 或 2 个真实 POST；
+- candidate 过滤成功与全坏空数组成功各 1 组；
+- repair 后 4 类硬错误失败；
+- 两窗口预算隔离、state 恢复、最近 3 版本各 1 组；
+- 所有单窗口 HTTP 场景均明确防止意外第 3 个 `urlopen`。
+
+### 10.4 指定 latest-head Actions Run
+
+- Run：`33901795437`
+- Head SHA：`d89449c92b0a2311847f51312b96366258886107`
+- `repository-safety`：SUCCESS；日志为 `files_scanned=194`、`text_files=194`、`issue_count=0`
+- `lightweight-tests`：SUCCESS；日志为 253 passed / 1 deselected，91 passed / 2 deselected / 1 warning，`pip check` 通过，三个 stage exit code 均为 0
+- `task-report-gate`：SUCCESS；日志确认 2 个 report files
+- failed jobs：0
+
+本节记录的是 FIX2 实现 HEAD 的指定 Run。发布本复审报告后会生成新的 latest-head Actions，必须等待同三项全部 SUCCESS 后才运行 `Get-PRHandoff.ps1`。
+
+## 11. 变更范围与最终决定
+
+FIX2 相对第一次审核报告后 HEAD 的变更仅为：
+
+- `src/liveclip/analysis/client.py`
+- `src/liveclip/analysis/pipeline.py`
+- `tests/test_semantic_analysis.py`
+- `tasks/reports/TASK-004-FIX_RESULT.md`
+- `docs/CURRENT_STATUS.md`
+
+本次独立复审不修改上述实现、测试、RESULT、`CURRENT_STATUS.md` 或其他既有文档，只更新现有 `tasks/reports/TASK-004-FIX-R_AUDIT.md`。
+
+最终决定：**100/100，通过，B-1 已关闭，无未关闭阻断。** 按用户明确要求，PR 继续保持 Draft；本次不 Ready、不 merge、不 auto-merge，也不执行 TASK-008。
+
+---
+
+# 第一次审核历史（原 82/100 审核正文，完整保留）
+
 # TASK-004-FIX-R AUDIT｜爆点候选容错独立审核
 
 ## 1. 审核对象与边界
