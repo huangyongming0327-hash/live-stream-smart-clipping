@@ -64,3 +64,37 @@ ASR、未读取或上传视频/音频，也没有扫描工作区以外的用户�
 未更换模型，未修改 ASR、字幕烧录、review/export、Windows 启动器或 TASK-007 行为；没有实现
 批量、多片段拼接、自动发布或 TASK-008。交付只创建 Draft PR，不 Ready、不 merge、不启用
 auto-merge、不 force push。GitHub latest-head Actions 与独立审核不在本地结果中预先宣称。
+
+## 6. TASK-004-FIX2 结果｜每窗口真实 HTTP 请求预算
+
+独立审核确认原实现只限制了每窗口最多两次 `analyze_window` 逻辑调用，但生产
+`OpenAICompatibleClient` 会为每次逻辑调用各自执行 transport retry，组合后可能产生第 3 或
+第 4 个真实 HTTP POST。本次在同一分支和 PR 上完成最小修复：`run_analysis` 为每个窗口创建
+一个上限为 2 的共享 HTTP 请求预算，首次分析、transport retry 和唯一一次 repair 全部消费同一
+预算。生产客户端仍只在真正调用 `urlopen` 前递增 `request_count`，没有把它改成逻辑调用次数。
+
+预算行为如下：
+
+- 首答合法时只发送 1 个 POST；
+- 首答结构错误时，repair 使用第 2 个 POST，repair 内不再有可用的 transport retry；
+- 首次 POST 超时后，transport retry 使用第 2 个 POST；若该响应结构错误，直接按预算耗尽失败，
+  不再发送 repair；
+- 首答结构错误且 repair POST 超时时直接失败，不再发送 repair transport retry；
+- 首次请求遇到 429 或 5xx 时仍允许一次 transport retry，但真实 POST 总数不超过 2。
+
+新增组合测试全部使用生产 `OpenAICompatibleClient` 与 monkeypatch 的受控
+`urllib.request.urlopen`，并同时断言 `AnalysisResult.request_count`、客户端 `request_count` 和
+实际 `urlopen` 调用数。覆盖首答合法、首答错误加 repair 成功、首答超时加 transport retry
+成功、首答超时且 retry 后结构错误、首答错误且 repair 超时，以及 429/500/503 retry；所有分支
+均为 1 或 2 次真实 POST，没有第 3 次。
+
+FIX2 后 TASK-004 专项为 50 passed、0 failed。完整 source-only 为 base-schema-media 253 passed、
+1 deselected、0 failed；asr-experiments 91 passed、2 deselected、0 failed，仅有既有 `audioop`
+deprecation warning；`pip check` 为 `No broken requirements found.`；三个阶段退出码均为 0，
+`SOURCE_ONLY_RESULT.status=passed`。
+
+首次响应严格校验、最多一次 repair、repair 后 candidate 逐项过滤、全坏时空数组、JSON/topics/
+candidates 容器硬错误、candidate 15—180 秒且完整属于唯一 topic、state/恢复/最近 3 个版本均由
+既有测试继续覆盖。`validate_analysis` 未修改。未修改独立审核报告，未执行 TASK-008；PR 继续
+保持 Draft，不 Ready、不 merge、不启用 auto-merge。GitHub latest-head Actions 在本地结果中不
+预先宣称。

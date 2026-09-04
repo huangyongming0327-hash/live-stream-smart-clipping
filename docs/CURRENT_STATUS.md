@@ -105,6 +105,20 @@
   候选文本、路径、分析文件和 API Key 继续只留在 Git 忽略或进程环境中。
 - 未修改 ASR、字幕烧录、Windows 启动器或模型配置，未增加第 3 次请求，未执行 TASK-008。
 
+## TASK-004-FIX2
+
+- 状态：独立审核发现的每窗口真实 HTTP POST 上限阻断已完成最小本地修复和回归测试；继续在
+  原分支与 Draft PR #10 交付，latest-head Actions 尚未在本地结果中预先宣称。
+- `run_analysis` 现在为每个窗口创建一个上限为 2 的共享预算；首次请求、transport retry 和
+  唯一一次 repair 共用该预算。`OpenAICompatibleClient.request_count` 继续只统计真正调用
+  `urlopen` 的 HTTP POST，不改为逻辑调用次数。
+- 生产客户端加受控 `urlopen` 的组合测试覆盖首答合法、首答错误加 repair、首次超时加 retry、
+  retry 后结构错误、repair 超时，以及 429/500/503；每种场景均实际观察到不超过 2 个 POST。
+- 首次严格校验、repair 后 candidate 逐项过滤、全坏时空数组、JSON/topics/container 硬错误、
+  15—180 秒、唯一 topic、state/恢复/最近 3 版本继续保持；`validate_analysis` 未修改。
+- TASK-004 专项为 50 passed、0 failed；source-only 为基础 253 passed/1 deselected、ASR
+  91 passed/2 deselected，均 0 failed；`pip check` 通过。未修改审核报告，未执行 TASK-008。
+
 ## TASK-005
 
 - 状态：单视频本地候选审核、浏览器预览、毫秒级入出点调整、明确人工确认、单片段

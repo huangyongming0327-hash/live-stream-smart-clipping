@@ -14,7 +14,7 @@ from uuid import uuid4
 
 from liveclip.asr.exporters import atomic_write_json, atomic_write_text
 
-from .client import LLMConfig, OpenAICompatibleClient, load_config
+from .client import HTTPRequestBudget, LLMConfig, OpenAICompatibleClient, load_config
 from .schema import (
     AnalysisError,
     ModelResponseError,
@@ -32,6 +32,7 @@ from .schema import (
 MAX_WINDOW_DURATION_MS = 600_000
 MAX_WINDOW_CHARACTERS = 12_000
 MAX_CANDIDATES = 20
+MAX_HTTP_REQUESTS_PER_WINDOW = 2
 STATE_SCHEMA_VERSION = "1.0"
 PRIVACY_NOTICE = "仅字幕文本会发送到你配置的文本模型API；视频和音频不会上传。"
 
@@ -46,6 +47,7 @@ class AnalysisClient(Protocol):
         *,
         repair_error: str | None = None,
         previous_response: str | None = None,
+        request_budget: HTTPRequestBudget | None = None,
     ) -> str: ...
 
 
@@ -171,15 +173,22 @@ def run_analysis(
             notice_printed = True
         progress(f"分析窗口: {window_index + 1}/{len(windows)}")
         window = windows[window_index]
+        request_budget = HTTPRequestBudget(limit=MAX_HTTP_REQUESTS_PER_WINDOW)
         assert client is not None
-        content = client.analyze_window(window)
+        content = client.analyze_window(window, request_budget=request_budget)
         try:
             parsed = parse_model_response(content, window_segments=window)
         except ModelResponseError as first_error:
+            if request_budget.remaining <= 0:
+                raise AnalysisError(
+                    "模型首次输出无效，且每窗口 2 次 HTTP 请求预算已用尽: "
+                    f"{first_error}"
+                ) from None
             repair_content = client.analyze_window(
                 window,
                 repair_error=str(first_error),
                 previous_response=content,
+                request_budget=request_budget,
             )
             try:
                 parsed = parse_repaired_model_response(

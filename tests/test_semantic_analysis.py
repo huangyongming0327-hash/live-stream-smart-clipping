@@ -11,6 +11,7 @@ import pytest
 from liveclip.analysis import pipeline
 from liveclip.analysis.client import (
     AnalysisClientError,
+    HTTPRequestBudget,
     LLMConfig,
     OpenAICompatibleClient,
     load_config,
@@ -194,13 +195,19 @@ class FakeClient:
         *,
         repair_error: str | None = None,
         previous_response: str | None = None,
+        request_budget: HTTPRequestBudget | None = None,
     ) -> str:
+        if request_budget is not None:
+            request_budget.consume()
         self.request_count += 1
         self.calls.append(
             {
                 "ids": [segment["id"] for segment in segments],
                 "repair_error": repair_error,
                 "previous_response": previous_response,
+                "request_budget_remaining": (
+                    request_budget.remaining if request_budget is not None else None
+                ),
             }
         )
         result = self.responder(segments, self.request_count)
@@ -211,6 +218,51 @@ class FakeClient:
 
 def always_valid(segments: list[dict[str, Any]], _: int) -> str:
     return model_payload(segments)
+
+
+class ControlledHTTPResponse:
+    def __init__(self, content: str) -> None:
+        self.content = content
+
+    def __enter__(self) -> "ControlledHTTPResponse":
+        return self
+
+    def __exit__(self, *_args: Any) -> None:
+        return None
+
+    def read(self, _limit: int) -> bytes:
+        return json.dumps(
+            {"choices": [{"message": {"content": self.content}}]},
+            ensure_ascii=False,
+        ).encode("utf-8")
+
+
+def production_client() -> OpenAICompatibleClient:
+    return OpenAICompatibleClient(
+        LLMConfig(
+            endpoint="https://fake.invalid/v1/chat/completions",
+            api_key=SECRET,
+            model="fake-model",
+            endpoint_host="fake.invalid",
+        )
+    )
+
+
+def control_urlopen(
+    monkeypatch: pytest.MonkeyPatch,
+    outcomes: list[str | BaseException],
+) -> list[Any]:
+    calls: list[Any] = []
+
+    def fake_urlopen(request: Any, *, timeout: float) -> ControlledHTTPResponse:
+        calls.append((request, timeout))
+        outcome = outcomes[len(calls) - 1]
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return ControlledHTTPResponse(outcome)
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    return calls
 
 
 @pytest.mark.parametrize(
@@ -773,6 +825,127 @@ def test_only_three_complete_versions_are_retained(tmp_path: Path) -> None:
     assert (tmp_path / "current_analysis.json").is_file()
     assert len(history) == 2
     assert len(history) + 1 == 3
+
+
+def test_real_client_valid_first_response_uses_one_http_post(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    timeline = make_timeline()
+    path = write_timeline(tmp_path / "timeline.json", timeline)
+    client = production_client()
+    calls = control_urlopen(monkeypatch, [model_payload(timeline["segments"])])
+
+    result = run_analysis(path, client=client, progress=lambda _: None)
+
+    assert result.request_count == client.request_count == len(calls) == 1
+
+
+def test_real_client_invalid_first_response_repairs_with_second_http_post(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    timeline = make_timeline()
+    path = write_timeline(tmp_path / "timeline.json", timeline)
+    client = production_client()
+    calls = control_urlopen(
+        monkeypatch,
+        ["not-json", model_payload(timeline["segments"])],
+    )
+
+    result = run_analysis(path, client=client, progress=lambda _: None)
+
+    assert result.request_count == client.request_count == len(calls) == 2
+    repair_body = json.loads(calls[1][0].data.decode("utf-8"))
+    repair_payload = json.loads(repair_body["messages"][1]["content"])
+    assert "repair" in repair_payload
+
+
+def test_real_client_timeout_then_transport_retry_succeeds_with_second_http_post(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    timeline = make_timeline()
+    path = write_timeline(tmp_path / "timeline.json", timeline)
+    client = production_client()
+    calls = control_urlopen(
+        monkeypatch,
+        [TimeoutError("controlled timeout"), model_payload(timeline["segments"])],
+    )
+
+    result = run_analysis(path, client=client, progress=lambda _: None)
+
+    assert result.request_count == client.request_count == len(calls) == 2
+    retry_body = json.loads(calls[1][0].data.decode("utf-8"))
+    retry_payload = json.loads(retry_body["messages"][1]["content"])
+    assert "repair" not in retry_payload
+
+
+def test_real_client_timeout_then_invalid_retry_cannot_make_repair_post(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = write_timeline(tmp_path / "timeline.json", make_timeline())
+    client = production_client()
+    calls = control_urlopen(
+        monkeypatch,
+        [TimeoutError("controlled timeout"), "not-json"],
+    )
+
+    with pytest.raises(AnalysisError, match="HTTP 请求预算已用尽"):
+        run_analysis(path, client=client, progress=lambda _: None)
+
+    assert client.request_count == len(calls) == 2
+    assert not (tmp_path / "current_analysis.json").exists()
+
+
+def test_real_client_invalid_first_response_then_repair_timeout_does_not_retry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = write_timeline(tmp_path / "timeline.json", make_timeline())
+    client = production_client()
+    calls = control_urlopen(
+        monkeypatch,
+        ["not-json", TimeoutError("controlled repair timeout")],
+    )
+
+    with pytest.raises(AnalysisClientError, match="超时或网络不可用"):
+        run_analysis(path, client=client, progress=lambda _: None)
+
+    assert client.request_count == len(calls) == 2
+    repair_body = json.loads(calls[1][0].data.decode("utf-8"))
+    repair_payload = json.loads(repair_body["messages"][1]["content"])
+    assert "repair" in repair_payload
+    assert not (tmp_path / "current_analysis.json").exists()
+
+
+@pytest.mark.parametrize("status_code", [429, 500, 503])
+def test_real_client_retryable_http_status_uses_at_most_two_posts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    status_code: int,
+) -> None:
+    timeline = make_timeline()
+    path = write_timeline(tmp_path / "timeline.json", timeline)
+    client = production_client()
+    calls = control_urlopen(
+        monkeypatch,
+        [
+            urllib.error.HTTPError(
+                "https://fake.invalid",
+                status_code,
+                "controlled retryable status",
+                hdrs=None,
+                fp=None,
+            ),
+            model_payload(timeline["segments"]),
+        ],
+    )
+
+    result = run_analysis(path, client=client, progress=lambda _: None)
+
+    assert result.request_count == client.request_count == len(calls) == 2
 
 
 def test_http_client_retries_timeout_once_and_sends_only_subtitle_fields(

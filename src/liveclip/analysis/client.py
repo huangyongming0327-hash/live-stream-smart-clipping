@@ -25,6 +25,23 @@ class AnalysisClientError(AnalysisError):
     """Raised for a safe, user-facing model API failure."""
 
 
+@dataclass
+class HTTPRequestBudget:
+    """Shared cap for real HTTP POST attempts made for one analysis window."""
+
+    limit: int
+    used: int = 0
+
+    @property
+    def remaining(self) -> int:
+        return max(0, self.limit - self.used)
+
+    def consume(self) -> None:
+        if self.remaining <= 0:
+            raise AnalysisClientError("每个窗口最多允许 2 次模型 HTTP 请求")
+        self.used += 1
+
+
 @dataclass(frozen=True)
 class LLMConfig:
     endpoint: str
@@ -78,6 +95,7 @@ class OpenAICompatibleClient:
         *,
         repair_error: str | None = None,
         previous_response: str | None = None,
+        request_budget: HTTPRequestBudget | None = None,
     ) -> str:
         messages = build_messages(
             segments,
@@ -104,7 +122,10 @@ class OpenAICompatibleClient:
             },
             method="POST",
         )
-        response_bytes = self._send_with_retry(request)
+        response_bytes = self._send_with_retry(
+            request,
+            request_budget=request_budget,
+        )
         try:
             response = json.loads(response_bytes.decode("utf-8"))
             content = response["choices"][0]["message"]["content"]
@@ -114,9 +135,19 @@ class OpenAICompatibleClient:
             raise AnalysisClientError("模型 API 返回了空内容")
         return content
 
-    def _send_with_retry(self, request: urllib.request.Request) -> bytes:
+    def _send_with_retry(
+        self,
+        request: urllib.request.Request,
+        *,
+        request_budget: HTTPRequestBudget | None = None,
+    ) -> bytes:
+        budget = request_budget or HTTPRequestBudget(limit=2)
+        max_attempts = min(2, budget.remaining)
+        if max_attempts <= 0:
+            raise AnalysisClientError("每个窗口最多允许 2 次模型 HTTP 请求")
         last_error: BaseException | None = None
-        for attempt in range(2):
+        for attempt in range(max_attempts):
+            budget.consume()
             self.request_count += 1
             try:
                 with urllib.request.urlopen(
@@ -130,14 +161,14 @@ class OpenAICompatibleClient:
             except urllib.error.HTTPError as exc:
                 last_error = exc
                 retryable = exc.code == 429 or 500 <= exc.code <= 599
-                if retryable and attempt == 0:
+                if retryable and attempt + 1 < max_attempts:
                     continue
                 if exc.code in {401, 403}:
                     raise AnalysisClientError(f"模型 API 鉴权失败 (HTTP {exc.code})") from None
                 raise AnalysisClientError(f"模型 API 请求失败 (HTTP {exc.code})") from None
             except (TimeoutError, socket.timeout, urllib.error.URLError) as exc:
                 last_error = exc
-                if attempt == 0:
+                if attempt + 1 < max_attempts:
                     continue
                 raise AnalysisClientError("模型 API 请求超时或网络不可用") from None
         raise AnalysisClientError(f"模型 API 请求失败: {type(last_error).__name__}")
