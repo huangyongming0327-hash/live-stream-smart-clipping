@@ -88,6 +88,23 @@
 - 真实视频、音频、timeline、analysis、state、字幕、API Key 和 `local-data/` 不进入
   Git；离线 fake-client 结果不冒充真实 API 或候选质量证据。
 
+## TASK-004-FIX
+
+- 状态：真实验收暴露的 repair 后单个 candidate 不稳定问题已完成最小修复、本地测试和
+  真实 API 回归；通过 Draft PR 交付，latest-head Actions 与独立审核仍待后续确认。
+- 首次响应继续执行原有整包严格校验，失败后仍只允许 1 次 repair；repair 的 JSON、顶层、
+  topics、candidates 数组和每窗 3 个上限继续整体严格，只有单个 candidate 错误会被逐项丢弃。
+- candidate 的 15—180 秒、完整属于一个 topic、quote 范围、真实连续 segment ID、分数/risk
+  范围均未放宽；不自动改写 candidate 或 topic。全部 candidate 无效时以空数组完成窗口。
+- 过滤后的窗口结果仍原子保存到既有 state，恢复时继续用原有严格校验；最终发布仍必须通过
+  `validate_analysis`，最近 current 加 2 个 history 的三版本规则不变。
+- TASK-004 专项为 42 passed、0 failed；source-only 为基础 245 passed/1 deselected、ASR
+  91 passed/2 deselected，均 0 failed；`pip check` 通过。
+- 真实验证复用既有 827.766 秒、169-segment timeline，不重跑 ASR；2 个窗口完成并发布
+  15 topics、5 candidates，最终严格校验通过、timeline SHA 不变、state 已清理。真实字幕、
+  候选文本、路径、分析文件和 API Key 继续只留在 Git 忽略或进程环境中。
+- 未修改 ASR、字幕烧录、Windows 启动器或模型配置，未增加第 3 次请求，未执行 TASK-008。
+
 ## TASK-005
 
 - 状态：单视频本地候选审核、浏览器预览、毫秒级入出点调整、明确人工确认、单片段

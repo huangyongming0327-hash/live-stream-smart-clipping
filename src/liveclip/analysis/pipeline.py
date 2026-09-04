@@ -22,6 +22,7 @@ from .schema import (
     load_timeline,
     overlap_ratio,
     parse_model_response,
+    parse_repaired_model_response,
     score_candidate,
     validate_analysis,
     validate_model_payload,
@@ -181,7 +182,10 @@ def run_analysis(
                 previous_response=content,
             )
             try:
-                parsed = parse_model_response(repair_content, window_segments=window)
+                parsed = parse_repaired_model_response(
+                    repair_content,
+                    window_segments=window,
+                )
             except ModelResponseError as second_error:
                 raise AnalysisError(
                     f"模型输出修复重试后仍无效: {second_error}"

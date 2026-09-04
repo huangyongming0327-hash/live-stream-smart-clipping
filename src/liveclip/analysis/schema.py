@@ -69,6 +69,45 @@ def parse_model_response(
     *,
     window_segments: list[dict[str, Any]],
 ) -> dict[str, list[dict[str, Any]]]:
+    payload = _parse_model_json(content)
+    return validate_model_payload(payload, window_segments=window_segments)
+
+
+def parse_repaired_model_response(
+    content: str,
+    *,
+    window_segments: list[dict[str, Any]],
+) -> dict[str, list[dict[str, Any]]]:
+    """Strictly validate repaired structure while discarding invalid candidates."""
+
+    payload = _parse_model_json(content)
+    if not isinstance(payload, dict) or set(payload) != {"topics", "candidates"}:
+        raise ModelResponseError("模型输出必须且只能包含 topics 和 candidates")
+    topics = payload["topics"]
+    candidates = payload["candidates"]
+    if not isinstance(topics, list) or not isinstance(candidates, list):
+        raise ModelResponseError("topics 和 candidates 必须是数组")
+    if len(candidates) > 3:
+        raise ModelResponseError("每个窗口最多返回 3 个 candidates")
+
+    clean_topics = validate_model_payload(
+        {"topics": topics, "candidates": []},
+        window_segments=window_segments,
+    )["topics"]
+    clean_candidates: list[dict[str, Any]] = []
+    for candidate in candidates:
+        try:
+            clean_candidate = validate_model_payload(
+                {"topics": clean_topics, "candidates": [candidate]},
+                window_segments=window_segments,
+            )["candidates"][0]
+        except ModelResponseError:
+            continue
+        clean_candidates.append(clean_candidate)
+    return {"topics": clean_topics, "candidates": clean_candidates}
+
+
+def _parse_model_json(content: str) -> Any:
     text = content.strip()
     if text.startswith("```") and text.endswith("```"):
         lines = text.splitlines()
@@ -78,7 +117,7 @@ def parse_model_response(
         payload = json.loads(text)
     except json.JSONDecodeError:
         raise ModelResponseError("模型输出不是合法 JSON") from None
-    return validate_model_payload(payload, window_segments=window_segments)
+    return payload
 
 
 def validate_model_payload(
