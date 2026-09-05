@@ -11,6 +11,7 @@ import pytest
 from liveclip.analysis import pipeline
 from liveclip.analysis.client import (
     AnalysisClientError,
+    HTTPRequestBudget,
     LLMConfig,
     OpenAICompatibleClient,
     load_config,
@@ -131,6 +132,45 @@ def model_payload(
     return json.dumps(payload, ensure_ascii=False)
 
 
+def make_candidate(
+    segments: list[dict[str, Any]],
+    start_id: int,
+    end_id: int,
+    *,
+    title: str,
+) -> dict[str, Any]:
+    candidate = json.loads(
+        model_payload(segments, candidate_range=(start_id, end_id))
+    )["candidates"][0]
+    candidate["title"] = title
+    return candidate
+
+
+def make_topics(
+    *ranges: tuple[int, int],
+) -> list[dict[str, Any]]:
+    return [
+        {
+            "start_segment_id": start_id,
+            "end_segment_id": end_id,
+            "title": f"话题{index}",
+            "summary": f"话题{index}摘要",
+        }
+        for index, (start_id, end_id) in enumerate(ranges, 1)
+    ]
+
+
+def repaired_client(payload: Any) -> "FakeClient":
+    repaired = (
+        payload
+        if isinstance(payload, str)
+        else json.dumps(payload, ensure_ascii=False)
+    )
+    return FakeClient(
+        lambda _segments, call: "首次输出无效" if call == 1 else repaired
+    )
+
+
 class FakeClient:
     def __init__(
         self,
@@ -155,13 +195,19 @@ class FakeClient:
         *,
         repair_error: str | None = None,
         previous_response: str | None = None,
+        request_budget: HTTPRequestBudget | None = None,
     ) -> str:
+        if request_budget is not None:
+            request_budget.consume()
         self.request_count += 1
         self.calls.append(
             {
                 "ids": [segment["id"] for segment in segments],
                 "repair_error": repair_error,
                 "previous_response": previous_response,
+                "request_budget_remaining": (
+                    request_budget.remaining if request_budget is not None else None
+                ),
             }
         )
         result = self.responder(segments, self.request_count)
@@ -172,6 +218,51 @@ class FakeClient:
 
 def always_valid(segments: list[dict[str, Any]], _: int) -> str:
     return model_payload(segments)
+
+
+class ControlledHTTPResponse:
+    def __init__(self, content: str) -> None:
+        self.content = content
+
+    def __enter__(self) -> "ControlledHTTPResponse":
+        return self
+
+    def __exit__(self, *_args: Any) -> None:
+        return None
+
+    def read(self, _limit: int) -> bytes:
+        return json.dumps(
+            {"choices": [{"message": {"content": self.content}}]},
+            ensure_ascii=False,
+        ).encode("utf-8")
+
+
+def production_client() -> OpenAICompatibleClient:
+    return OpenAICompatibleClient(
+        LLMConfig(
+            endpoint="https://fake.invalid/v1/chat/completions",
+            api_key=SECRET,
+            model="fake-model",
+            endpoint_host="fake.invalid",
+        )
+    )
+
+
+def control_urlopen(
+    monkeypatch: pytest.MonkeyPatch,
+    outcomes: list[str | BaseException],
+) -> list[Any]:
+    calls: list[Any] = []
+
+    def fake_urlopen(request: Any, *, timeout: float) -> ControlledHTTPResponse:
+        calls.append((request, timeout))
+        outcome = outcomes[len(calls) - 1]
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return ControlledHTTPResponse(outcome)
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    return calls
 
 
 @pytest.mark.parametrize(
@@ -288,6 +379,259 @@ def test_second_invalid_json_stops_and_keeps_no_completed_output(tmp_path: Path)
         run_analysis(path, client=client, progress=lambda _: None)
     assert client.request_count == 2
     assert not (tmp_path / "current_analysis.json").exists()
+
+
+def test_repair_keeps_valid_candidate_and_discards_bad_duration_and_cross_topic(
+    tmp_path: Path,
+) -> None:
+    timeline = make_timeline(6)
+    segments = timeline["segments"]
+    valid = make_candidate(segments, 1, 2, title="合法候选")
+    too_short = make_candidate(segments, 3, 3, title="时长错误")
+    cross_topic = make_candidate(segments, 3, 4, title="跨话题")
+    payload = {
+        "topics": make_topics((1, 3), (4, 6)),
+        "candidates": [valid, too_short, cross_topic],
+    }
+    path = write_timeline(tmp_path / "timeline.json", timeline)
+    client = repaired_client(payload)
+
+    result = run_analysis(path, client=client, progress=lambda _: None)
+    output = json.loads(result.output_path.read_text(encoding="utf-8"))
+
+    assert result.request_count == 2
+    assert [candidate["title"] for candidate in output["candidates"]] == ["合法候选"]
+    validate_analysis(output, timeline=timeline)
+
+
+def test_first_response_stays_strict_before_candidate_tolerant_repair(
+    tmp_path: Path,
+) -> None:
+    timeline = make_timeline(4)
+    segments = timeline["segments"]
+    valid = make_candidate(segments, 1, 2, title="合法候选")
+    too_short = make_candidate(segments, 3, 3, title="时长错误")
+    payload = json.dumps(
+        {
+            "topics": make_topics((1, 4)),
+            "candidates": [valid, too_short],
+        },
+        ensure_ascii=False,
+    )
+    path = write_timeline(tmp_path / "timeline.json", timeline)
+    client = FakeClient(lambda _segments, _call: payload)
+
+    output_path = run_analysis(
+        path,
+        client=client,
+        progress=lambda _: None,
+    ).output_path
+    output = json.loads(output_path.read_text(encoding="utf-8"))
+
+    assert client.request_count == 2
+    assert "15—180" in client.calls[1]["repair_error"]
+    assert len(output["candidates"]) == 1
+
+
+def test_repair_discards_only_candidate_with_quote_outside_range(
+    tmp_path: Path,
+) -> None:
+    timeline = make_timeline(6)
+    segments = timeline["segments"]
+    valid = make_candidate(segments, 1, 2, title="合法候选")
+    bad_quote = make_candidate(segments, 3, 4, title="引用越界")
+    bad_quote["quote_segment_id"] = 5
+    payload = {
+        "topics": make_topics((1, 6)),
+        "candidates": [valid, bad_quote],
+    }
+    path = write_timeline(tmp_path / "timeline.json", timeline)
+
+    output_path = run_analysis(
+        path,
+        client=repaired_client(payload),
+        progress=lambda _: None,
+    ).output_path
+    output = json.loads(output_path.read_text(encoding="utf-8"))
+
+    assert [candidate["title"] for candidate in output["candidates"]] == ["合法候选"]
+    validate_analysis(output, timeline=timeline)
+
+
+def test_repair_discards_only_candidate_with_score_out_of_range(
+    tmp_path: Path,
+) -> None:
+    timeline = make_timeline(6)
+    segments = timeline["segments"]
+    valid = make_candidate(segments, 1, 2, title="合法候选")
+    bad_score = make_candidate(segments, 3, 4, title="分数越界")
+    bad_score["content_value"] = 26
+    payload = {
+        "topics": make_topics((1, 6)),
+        "candidates": [valid, bad_score],
+    }
+    path = write_timeline(tmp_path / "timeline.json", timeline)
+
+    output_path = run_analysis(
+        path,
+        client=repaired_client(payload),
+        progress=lambda _: None,
+    ).output_path
+    output = json.loads(output_path.read_text(encoding="utf-8"))
+
+    assert [candidate["title"] for candidate in output["candidates"]] == ["合法候选"]
+    validate_analysis(output, timeline=timeline)
+
+
+def test_repair_discards_only_candidate_with_invalid_fields(tmp_path: Path) -> None:
+    timeline = make_timeline(6)
+    segments = timeline["segments"]
+    valid = make_candidate(segments, 1, 2, title="合法候选")
+    bad_fields = make_candidate(segments, 3, 4, title="字段错误")
+    del bad_fields["reason"]
+    payload = {
+        "topics": make_topics((1, 6)),
+        "candidates": [valid, bad_fields],
+    }
+    path = write_timeline(tmp_path / "timeline.json", timeline)
+
+    output_path = run_analysis(
+        path,
+        client=repaired_client(payload),
+        progress=lambda _: None,
+    ).output_path
+    output = json.loads(output_path.read_text(encoding="utf-8"))
+
+    assert [candidate["title"] for candidate in output["candidates"]] == ["合法候选"]
+    validate_analysis(output, timeline=timeline)
+
+
+def test_repair_with_all_candidates_invalid_completes_with_empty_candidates(
+    tmp_path: Path,
+) -> None:
+    timeline = make_timeline(6)
+    segments = timeline["segments"]
+    too_short = make_candidate(segments, 1, 1, title="时长错误")
+    bad_quote = make_candidate(segments, 2, 3, title="引用越界")
+    bad_quote["quote_segment_id"] = 4
+    bad_score = make_candidate(segments, 4, 5, title="分数越界")
+    bad_score["risk_penalty"] = 31
+    payload = {
+        "topics": make_topics((1, 6)),
+        "candidates": [too_short, bad_quote, bad_score],
+    }
+    path = write_timeline(tmp_path / "timeline.json", timeline)
+    client = repaired_client(payload)
+
+    result = run_analysis(path, client=client, progress=lambda _: None)
+    output = json.loads(result.output_path.read_text(encoding="utf-8"))
+
+    assert client.request_count == 2
+    assert output["candidates"] == []
+    validate_analysis(output, timeline=timeline)
+
+
+@pytest.mark.parametrize(
+    ("repaired", "message"),
+    [
+        ("repair-json-is-broken", "合法 JSON"),
+        (
+            {"topics": make_topics((1, 4), (4, 6)), "candidates": []},
+            "topic 不得重叠",
+        ),
+        (
+            {"topics": make_topics((1, 99)), "candidates": []},
+            "topic segment 范围无效",
+        ),
+        ({"topics": make_topics((1, 6)), "candidates": {}}, "必须是数组"),
+    ],
+    ids=[
+        "broken-json",
+        "overlapping-topics",
+        "topic-unknown-segment",
+        "candidates-not-array",
+    ],
+)
+def test_repair_keeps_structural_and_topic_failures_fatal_without_third_request(
+    tmp_path: Path,
+    repaired: Any,
+    message: str,
+) -> None:
+    path = write_timeline(tmp_path / "timeline.json", make_timeline(6))
+    client = repaired_client(repaired)
+
+    with pytest.raises(AnalysisError, match=message):
+        run_analysis(path, client=client, progress=lambda _: None)
+
+    assert client.request_count == 2
+    assert not (tmp_path / "current_analysis.json").exists()
+
+
+def test_repair_with_more_than_three_candidates_remains_fatal(tmp_path: Path) -> None:
+    timeline = make_timeline(8)
+    segments = timeline["segments"]
+    payload = {
+        "topics": make_topics((1, 8)),
+        "candidates": [
+            make_candidate(segments, start_id, start_id + 1, title=f"候选{index}")
+            for index, start_id in enumerate((1, 3, 5, 7), 1)
+        ],
+    }
+    path = write_timeline(tmp_path / "timeline.json", timeline)
+    client = repaired_client(payload)
+
+    with pytest.raises(AnalysisError, match="最多返回 3"):
+        run_analysis(path, client=client, progress=lambda _: None)
+
+    assert client.request_count == 2
+    assert not (tmp_path / "current_analysis.json").exists()
+
+
+def test_filtered_repair_saves_state_and_resumes_from_next_window(
+    tmp_path: Path,
+) -> None:
+    timeline = make_timeline(61)
+    path = write_timeline(tmp_path / "timeline.json", timeline)
+
+    def interrupt_after_filtered_window(
+        segments: list[dict[str, Any]],
+        call: int,
+    ) -> str | BaseException:
+        if call == 1:
+            return "首次输出无效"
+        if call == 2:
+            valid = make_candidate(segments, 1, 2, title="合法候选")
+            invalid = make_candidate(segments, 3, 3, title="时长错误")
+            return json.dumps(
+                {
+                    "topics": make_topics((1, 60)),
+                    "candidates": [valid, invalid],
+                },
+                ensure_ascii=False,
+            )
+        return KeyboardInterrupt()
+
+    first_client = FakeClient(interrupt_after_filtered_window)
+    with pytest.raises(KeyboardInterrupt):
+        run_analysis(path, client=first_client, progress=lambda _: None)
+
+    state_path = tmp_path / ".analysis_work" / "analysis_state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert first_client.request_count == 3
+    assert [call["ids"][0] for call in first_client.calls] == [1, 1, 61]
+    assert state["completed_window_count"] == 1
+    assert len(state["window_results"][0]["candidates"]) == 1
+
+    resumed_client = FakeClient(always_valid)
+    result = run_analysis(path, client=resumed_client, progress=lambda _: None)
+    output = json.loads(result.output_path.read_text(encoding="utf-8"))
+
+    assert result.resumed_from_window == 2
+    assert resumed_client.request_count == 1
+    assert resumed_client.calls[0]["ids"] == [61]
+    assert len(output["candidates"]) == 1
+    validate_analysis(output, timeline=timeline)
+    assert not (tmp_path / ".analysis_work").exists()
 
 
 def test_unknown_segment_id_triggers_repair_retry() -> None:
@@ -481,6 +825,127 @@ def test_only_three_complete_versions_are_retained(tmp_path: Path) -> None:
     assert (tmp_path / "current_analysis.json").is_file()
     assert len(history) == 2
     assert len(history) + 1 == 3
+
+
+def test_real_client_valid_first_response_uses_one_http_post(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    timeline = make_timeline()
+    path = write_timeline(tmp_path / "timeline.json", timeline)
+    client = production_client()
+    calls = control_urlopen(monkeypatch, [model_payload(timeline["segments"])])
+
+    result = run_analysis(path, client=client, progress=lambda _: None)
+
+    assert result.request_count == client.request_count == len(calls) == 1
+
+
+def test_real_client_invalid_first_response_repairs_with_second_http_post(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    timeline = make_timeline()
+    path = write_timeline(tmp_path / "timeline.json", timeline)
+    client = production_client()
+    calls = control_urlopen(
+        monkeypatch,
+        ["not-json", model_payload(timeline["segments"])],
+    )
+
+    result = run_analysis(path, client=client, progress=lambda _: None)
+
+    assert result.request_count == client.request_count == len(calls) == 2
+    repair_body = json.loads(calls[1][0].data.decode("utf-8"))
+    repair_payload = json.loads(repair_body["messages"][1]["content"])
+    assert "repair" in repair_payload
+
+
+def test_real_client_timeout_then_transport_retry_succeeds_with_second_http_post(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    timeline = make_timeline()
+    path = write_timeline(tmp_path / "timeline.json", timeline)
+    client = production_client()
+    calls = control_urlopen(
+        monkeypatch,
+        [TimeoutError("controlled timeout"), model_payload(timeline["segments"])],
+    )
+
+    result = run_analysis(path, client=client, progress=lambda _: None)
+
+    assert result.request_count == client.request_count == len(calls) == 2
+    retry_body = json.loads(calls[1][0].data.decode("utf-8"))
+    retry_payload = json.loads(retry_body["messages"][1]["content"])
+    assert "repair" not in retry_payload
+
+
+def test_real_client_timeout_then_invalid_retry_cannot_make_repair_post(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = write_timeline(tmp_path / "timeline.json", make_timeline())
+    client = production_client()
+    calls = control_urlopen(
+        monkeypatch,
+        [TimeoutError("controlled timeout"), "not-json"],
+    )
+
+    with pytest.raises(AnalysisError, match="HTTP 请求预算已用尽"):
+        run_analysis(path, client=client, progress=lambda _: None)
+
+    assert client.request_count == len(calls) == 2
+    assert not (tmp_path / "current_analysis.json").exists()
+
+
+def test_real_client_invalid_first_response_then_repair_timeout_does_not_retry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = write_timeline(tmp_path / "timeline.json", make_timeline())
+    client = production_client()
+    calls = control_urlopen(
+        monkeypatch,
+        ["not-json", TimeoutError("controlled repair timeout")],
+    )
+
+    with pytest.raises(AnalysisClientError, match="超时或网络不可用"):
+        run_analysis(path, client=client, progress=lambda _: None)
+
+    assert client.request_count == len(calls) == 2
+    repair_body = json.loads(calls[1][0].data.decode("utf-8"))
+    repair_payload = json.loads(repair_body["messages"][1]["content"])
+    assert "repair" in repair_payload
+    assert not (tmp_path / "current_analysis.json").exists()
+
+
+@pytest.mark.parametrize("status_code", [429, 500, 503])
+def test_real_client_retryable_http_status_uses_at_most_two_posts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    status_code: int,
+) -> None:
+    timeline = make_timeline()
+    path = write_timeline(tmp_path / "timeline.json", timeline)
+    client = production_client()
+    calls = control_urlopen(
+        monkeypatch,
+        [
+            urllib.error.HTTPError(
+                "https://fake.invalid",
+                status_code,
+                "controlled retryable status",
+                hdrs=None,
+                fp=None,
+            ),
+            model_payload(timeline["segments"]),
+        ],
+    )
+
+    result = run_analysis(path, client=client, progress=lambda _: None)
+
+    assert result.request_count == client.request_count == len(calls) == 2
 
 
 def test_http_client_retries_timeout_once_and_sends_only_subtitle_fields(

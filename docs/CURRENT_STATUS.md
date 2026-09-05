@@ -88,6 +88,37 @@
 - 真实视频、音频、timeline、analysis、state、字幕、API Key 和 `local-data/` 不进入
   Git；离线 fake-client 结果不冒充真实 API 或候选质量证据。
 
+## TASK-004-FIX
+
+- 状态：真实验收暴露的 repair 后单个 candidate 不稳定问题已完成最小修复、本地测试和
+  真实 API 回归；通过 Draft PR 交付，latest-head Actions 与独立审核仍待后续确认。
+- 首次响应继续执行原有整包严格校验，失败后仍只允许 1 次 repair；repair 的 JSON、顶层、
+  topics、candidates 数组和每窗 3 个上限继续整体严格，只有单个 candidate 错误会被逐项丢弃。
+- candidate 的 15—180 秒、完整属于一个 topic、quote 范围、真实连续 segment ID、分数/risk
+  范围均未放宽；不自动改写 candidate 或 topic。全部 candidate 无效时以空数组完成窗口。
+- 过滤后的窗口结果仍原子保存到既有 state，恢复时继续用原有严格校验；最终发布仍必须通过
+  `validate_analysis`，最近 current 加 2 个 history 的三版本规则不变。
+- TASK-004 专项为 42 passed、0 failed；source-only 为基础 245 passed/1 deselected、ASR
+  91 passed/2 deselected，均 0 failed；`pip check` 通过。
+- 真实验证复用既有 827.766 秒、169-segment timeline，不重跑 ASR；2 个窗口完成并发布
+  15 topics、5 candidates，最终严格校验通过、timeline SHA 不变、state 已清理。真实字幕、
+  候选文本、路径、分析文件和 API Key 继续只留在 Git 忽略或进程环境中。
+- 未修改 ASR、字幕烧录、Windows 启动器或模型配置，未增加第 3 次请求，未执行 TASK-008。
+
+## TASK-004-FIX2
+
+- 状态：独立审核发现的每窗口真实 HTTP POST 上限阻断已完成最小本地修复和回归测试；继续在
+  原分支与 Draft PR #10 交付，latest-head Actions 尚未在本地结果中预先宣称。
+- `run_analysis` 现在为每个窗口创建一个上限为 2 的共享预算；首次请求、transport retry 和
+  唯一一次 repair 共用该预算。`OpenAICompatibleClient.request_count` 继续只统计真正调用
+  `urlopen` 的 HTTP POST，不改为逻辑调用次数。
+- 生产客户端加受控 `urlopen` 的组合测试覆盖首答合法、首答错误加 repair、首次超时加 retry、
+  retry 后结构错误、repair 超时，以及 429/500/503；每种场景均实际观察到不超过 2 个 POST。
+- 首次严格校验、repair 后 candidate 逐项过滤、全坏时空数组、JSON/topics/container 硬错误、
+  15—180 秒、唯一 topic、state/恢复/最近 3 版本继续保持；`validate_analysis` 未修改。
+- TASK-004 专项为 50 passed、0 failed；source-only 为基础 253 passed/1 deselected、ASR
+  91 passed/2 deselected，均 0 failed；`pip check` 通过。未修改审核报告，未执行 TASK-008。
+
 ## TASK-005
 
 - 状态：单视频本地候选审核、浏览器预览、毫秒级入出点调整、明确人工确认、单片段
