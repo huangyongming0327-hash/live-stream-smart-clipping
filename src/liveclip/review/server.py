@@ -18,6 +18,7 @@ from urllib.parse import parse_qs, quote, unquote, urlsplit
 from liveclip.media import FFmpegPaths
 
 from .exporter import ExportResult, export_review_clip
+from .preview import PreviewResult, ensure_preview_proxy, preview_proxy_path
 from .schema import (
     CompletedExport,
     ReviewConflictError,
@@ -39,6 +40,7 @@ MAX_REQUEST_BYTES = 16_384
 
 
 Exporter = Callable[..., ExportResult]
+PreviewGenerator = Callable[..., PreviewResult]
 
 
 class ReviewApplication:
@@ -48,14 +50,18 @@ class ReviewApplication:
         token: str,
         *,
         exporter: Exporter,
+        preview_generator: PreviewGenerator,
         paths: FFmpegPaths | None,
         heartbeat_timeout_seconds: float,
     ) -> None:
         self.inputs = inputs
         self.token = token
         self.exporter = exporter
+        self.preview_generator = preview_generator
         self.paths = paths
         self.export_lock = threading.Lock()
+        self.preview_lock = threading.Lock()
+        self.preview_path = preview_proxy_path(inputs)
         self.completed_export = load_completed_export(inputs)
         self.exported_candidate_id: str | None = (
             self.completed_export.candidate_id
@@ -235,12 +241,18 @@ class ReviewRequestHandler(BaseHTTPRequestHandler):
             return False
         return start, end
 
-    def _send_media(self, *, head_only: bool) -> None:
-        media = self.app.inputs.video_path
+    def _send_media(
+        self,
+        media: Path,
+        *,
+        head_only: bool,
+        missing_message: str,
+        missing_status: HTTPStatus = HTTPStatus.INTERNAL_SERVER_ERROR,
+    ) -> None:
         try:
             size = media.stat().st_size
         except OSError:
-            self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "原视频暂时不可读。"})
+            self._send_json(missing_status, {"error": missing_message})
             return
         requested_range = self._range(size)
         if requested_range is False:
@@ -333,7 +345,18 @@ class ReviewRequestHandler(BaseHTTPRequestHandler):
                 ),
             )
         elif path == "/media":
-            self._send_media(head_only=head_only)
+            self._send_media(
+                self.app.inputs.video_path,
+                head_only=head_only,
+                missing_message="原视频暂时不可读。",
+            )
+        elif path == "/media/preview":
+            self._send_media(
+                self.app.preview_path,
+                head_only=head_only,
+                missing_message="兼容预览尚未准备好。",
+                missing_status=HTTPStatus.NOT_FOUND,
+            )
         else:
             self._send_json(HTTPStatus.NOT_FOUND, {"error": "接口不存在。"})
 
@@ -351,6 +374,34 @@ class ReviewRequestHandler(BaseHTTPRequestHandler):
         if path == "/api/heartbeat":
             self.app.touch_heartbeat()
             self._send_json(HTTPStatus.OK, {"ok": True})
+            return
+        if path == "/api/preview-proxy":
+            try:
+                with self.app.preview_lock:
+                    result = self.app.preview_generator(
+                        self.app.inputs,
+                        paths=self.app.paths,
+                    )
+                self._send_json(
+                    HTTPStatus.OK,
+                    {
+                        "status": "ready",
+                        "cached": result.cached,
+                        "width": result.width,
+                        "height": result.height,
+                        "file_size_bytes": result.file_size_bytes,
+                    },
+                )
+            except ReviewError:
+                self._send_json(
+                    HTTPStatus.INTERNAL_SERVER_ERROR,
+                    {"error": "兼容预览生成失败，暂时无法人工预览。"},
+                )
+            except Exception:
+                self._send_json(
+                    HTTPStatus.INTERNAL_SERVER_ERROR,
+                    {"error": "兼容预览发生未预期错误，未发布缓存文件。"},
+                )
             return
         if path != "/api/export":
             self._send_json(HTTPStatus.NOT_FOUND, {"error": "接口不存在。"})
@@ -429,6 +480,7 @@ def create_review_server(
     *,
     token: str | None = None,
     exporter: Exporter = export_review_clip,
+    preview_generator: PreviewGenerator = ensure_preview_proxy,
     paths: FFmpegPaths | None = None,
     heartbeat_timeout_seconds: float = 10.0,
     heartbeat_check_seconds: float = 1.0,
@@ -443,6 +495,7 @@ def create_review_server(
             inputs,
             runtime_token,
             exporter=exporter,
+            preview_generator=preview_generator,
             paths=paths,
             heartbeat_timeout_seconds=heartbeat_timeout_seconds,
         ),

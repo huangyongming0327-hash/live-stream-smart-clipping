@@ -140,6 +140,25 @@
   停止且没有残留 Python 审核进程。真实输入、review、MP4、SRT 和运行状态继续被 Git
   忽略。
 
+## TASK-005-FIX
+
+- 状态：审核页浏览器兼容预览代理已完成实现、专项测试、完整 source-only、真实 Windows
+  FFmpeg 与用户真实浏览器人工 UAT；等待 Draft PR latest-head 三项 Actions 和最终 handoff。
+- 页面仍先播放 token 保护的原视频；媒体错误、播放启动失败、超时或浏览器只保留音频而跳过
+  视频轨时，自动生成并切换到完整时长代理。原片可播放时不会请求或生成代理。
+- 代理使用 CPU `libx264` Main、yuv420p、`veryfast`、CRF 29、2 编码线程和 faststart；最大
+  1280×720、不放大且保持宽高比；原片有音频时转为 AAC，无音频时不强造音轨。
+- 缓存名绑定代理版本和完整原视频 SHA；缓存复用前必须再次验证编码、像素格式、尺寸、宽高比、
+  时长和音频。唯一 `.part` 通过输入哈希复核与 ffprobe 后才原子发布。
+- `/api/preview-proxy` 和 `/media/preview` 沿用运行时 token；代理媒体支持 GET、HEAD、Range、
+  206 和 416。同一审核服务并发请求只启动一个 FFmpeg。
+- 用户真实浏览器人工 UAT 确认代理视频和声音、同候选重复预览、end 自动停止、A→B 与 B→A
+  候选切换、无红色错误及完全重启后的代理缓存复用均通过。候选切换使用独立区间播放和待定位
+  状态隔离旧媒体事件，不会递归生成代理或残留在上一候选结束点。
+- 正式导出仍从原视频生成 H.264/AAC 成片，烧录字幕可见且独立 SRT 存在；原视频、timeline、
+  analysis SHA 前后不变。专项为 69 passed；source-only 为 268 passed/1 deselected、ASR
+  91 passed/2 deselected，均 0 failed，`pip check` 通过。
+
 ## TASK-006
 
 - 状态：单 MP4 端到端统一入口、阶段复用/恢复、隐私最小化 `pipeline_status.json`、
@@ -164,9 +183,8 @@
 
 ## TASK-007
 
-- 状态：独立审核为 84/100，并要求修复单引号字幕路径阻断与完成态/SRT 一致性；TASK-007-FIX
-  已完成最小本地实现、自动测试和真实 Windows FFmpeg 验证，等待同一 Draft PR latest-head
-  三项 Actions，之后仍必须再次独立复审。
+- 状态：TASK-007 及其单引号字幕路径、完成态/SRT 一致性修复已进入当前 `master`；字幕烧录
+  和独立 SRT 是 TASK-005-FIX 正式导出的稳定基线。
 - 非空最终 SRT 与裁剪视频在同一次 FFmpeg H.264/AAC 导出中烧录；字幕固定为微软雅黑优先、
   白字、黑色描边、底部居中和安全边距，目标字号按视频高度取 24/28/32 px 三档并换算为
   libass 坐标。没有新增样式编辑、动画、翻译、纠错、改写、ASR 或文本模型调用。
@@ -271,16 +289,17 @@
 - 20窗口人工听音与结果分析已完成；MVP主模型为Paraformer、备用模型为SenseVoice，决策为高置信`confirmed_mvp_baseline`。
 - TASK-002-HUMAN-002 的发布完整性阻断已修复并复核；PR #4 已合并，TASK-002 已关闭。
 - TASK-003 已通过独立审核并合并；其非阻断 backlog 未在 TASK-004 或 TASK-005 顺手修复。
-- TASK-004 已通过独立审核并合并；其候选在 TASK-005 中仍全部默认待审核。
+- TASK-004 及 TASK-004-FIX 已合并；PR #10 已进入当前 `master`，候选在审核页仍默认待审核。
 - TASK-005 已通过独立审核并合并。
-- TASK-006 已通过独立审核并合并；PR #8 是 TASK-007 的最新 `master` 基线。
-- TASK-007-FIX 本地实现、自动测试和真实特殊路径验证已完成；等待同一 Draft PR 三项检查，
-  之后仍需新的独立复审结论。
+- TASK-006 已通过独立审核并合并。
+- TASK-007 及修复已进入当前 `master`，字幕烧录与独立 SRT 基线继续有效。
+- TASK-005-FIX 本地实现、自动测试、真实 FFmpeg、用户真实浏览器人工 UAT 和输入哈希复核已完成；等待
+  Draft PR latest-head 三项检查和最终 handoff。
 
 ## 建议下一步
 
-- 下一步只继续 TASK-007-FIX 的 Draft PR 三项 Actions 与交接，再进行独立复审；保持 Draft，
-  不执行 TASK-008。
+- 下一步只发布 TASK-005-FIX Draft PR，等待 latest-head 三项 Actions 并生成完整 handoff；
+  保持 Draft，不执行 Ready、merge、auto-merge 或 TASK-008。
 
 ## 约束核验
 
@@ -295,6 +314,8 @@
   状态、日志、结果、报告或 Git；真实 timeline/analysis/state 均未上传；
 - TASK-005 没有向互联网发送视频、字幕或审核数据；原视频、timeline 和 analysis 未修改，
   真实 review、导出 MP4/SRT、运行数据和项目本地 FFmpeg 均未上传。
+- TASK-005-FIX 的合成验证与用户真实人工 UAT 数据均留在 Git 忽略目录；代理、review、成片、
+  SRT 和抽帧均未上传。没有重跑 ASR、爆点分析或模型请求。
 - TASK-007 复用现有 timeline/analysis，不重新调用 ASR 或文本模型；原视频、timeline、
   analysis SHA 不变，真实烧录 MP4、独立 SRT、review 和抽帧均留在 Git 忽略目录。没有下载
   或移动模型，没有修改系统执行别名，没有执行 TASK-008。

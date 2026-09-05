@@ -46,6 +46,7 @@ class ReviewInputs:
     output_dir: Path
     review_path: Path
     video_duration_ms: int
+    video_width: int
     video_height: int
     video_sha256: str
     timeline_sha256: str
@@ -141,13 +142,17 @@ def bind_review_inputs(
         or video_probe.duration_seconds <= 0
     ):
         raise ReviewError("原视频必须包含可读取的视频流和有效时长。")
+    video_width = video_probe.video_streams[0].width
     video_height = video_probe.video_streams[0].height
     if (
-        isinstance(video_height, bool)
+        isinstance(video_width, bool)
+        or not isinstance(video_width, int)
+        or video_width <= 0
+        or isinstance(video_height, bool)
         or not isinstance(video_height, int)
         or video_height <= 0
     ):
-        raise ReviewError("原视频必须包含可读取的视频高度。")
+        raise ReviewError("原视频必须包含可读取的视频尺寸。")
     video_duration_ms = int(round(video_probe.duration_seconds * 1000))
 
     timeline_data, timeline_raw = _read_json(timeline_path, "timeline")
@@ -204,6 +209,7 @@ def bind_review_inputs(
         output_dir=selected_output,
         review_path=analysis_path.with_name("review_current.json"),
         video_duration_ms=video_duration_ms,
+        video_width=video_width,
         video_height=video_height,
         video_sha256=video_sha256,
         timeline_sha256=timeline_sha256,

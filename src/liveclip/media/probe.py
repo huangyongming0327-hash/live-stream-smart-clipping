@@ -20,6 +20,7 @@ class StreamInfo:
     codec_name: str | None
     width: int | None = None
     height: int | None = None
+    pixel_format: str | None = None
     frame_rate: float | None = None
     sample_rate: int | None = None
     channels: int | None = None
@@ -115,6 +116,9 @@ def parse_probe_json(
                 codec_name=(str(item["codec_name"]) if item.get("codec_name") else None),
                 width=_optional_int(item.get("width")),
                 height=_optional_int(item.get("height")),
+                pixel_format=(
+                    str(item["pix_fmt"]) if item.get("pix_fmt") else None
+                ),
                 frame_rate=parse_frame_rate(
                     item.get("avg_frame_rate") or item.get("r_frame_rate")
                 ),
