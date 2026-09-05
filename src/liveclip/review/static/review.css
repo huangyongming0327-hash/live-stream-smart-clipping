@@ -54,6 +54,24 @@ h2 { margin-bottom: 0; font-size: 20px; }
 
 .candidate-panel { padding: 18px; max-height: calc(100vh - 132px); overflow: auto; }
 .preview-panel { padding: 20px; }
+
+.preview-message {
+  margin: 10px 0 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: #fff5d9;
+  color: #6b4d00;
+}
+
+.preview-message[data-kind="ready"] {
+  background: #e8f7ee;
+  color: #185b35;
+}
+
+.preview-message[data-kind="failed"] {
+  background: #fff0f0;
+  color: #8b1e1e;
+}
 .panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
 .count-badge, .status-badge { border-radius: 999px; padding: 5px 10px; background: #edf1f7; font-size: 13px; font-weight: 700; }
 
