@@ -3,7 +3,7 @@
 总分：79/100
 审核结论：不通过
 
-审核日期：2026-09-13。B3 原音频相对偏移阻断已关闭；B1、B2 仍有可确定复现的问题，blocker 未全部关闭。低于 85 分门槛，且存在阻断，不允许据此 Ready 或合并。
+审核日期：2026-09-13 至 2026-09-14（北京时间）。B3 原音频相对偏移阻断已关闭；B1、B2 仍有可确定复现的问题，blocker 未全部关闭。低于 85 分门槛，且存在阻断，不允许据此 Ready 或合并。
 
 ## 审核对象与独立性
 
@@ -143,3 +143,5 @@ run链接：https://github.com/huangyongming0327-hash/live-stream-smart-clipping
 发布仅本报告，使用审计发布脚本的仅AUDIT范围门禁，发布前重跑source-only、差异及隐私检查。审核提交后的SHA不能自引用写入本提交，本文不预先宣布后续Actions成功；最终消息提供最新HEAD三项Actions完成状态与实际 `Get-PRHandoff.ps1` 输出。
 
 PR保持Draft，不Ready、不merge、不auto-merge、不force push、不执行TASK-008。即便报告提交后的Actions全绿，本次结论仍为不通过，B1/B2仍未关闭。
+
+发布证据补记：报告写入后source-only再次为277 passed/1 deselected、ASR91 passed/2 deselected、pip check通过；PublishCandidates扫描200文本、0问题。首个仅报告提交 `9c62269857be5127f7763b48e05c53add4ce6540` 的push出现远端ref锁错误，但随后Git远端与REST ref均确认该提交已存在，普通重推退出0、Everything up-to-date；PR API仍滞留旧HEAD。手动触发现有workflow得到run `34767566644`，其headSha确为该审核提交，三job均success：基础275 passed/2 skipped/1 deselected，ASR91 passed/2 deselected，pip check通过，safety200文件/0问题。该次为workflow_dispatch，报告门禁按全仓40报告通过，不冒充PR差异门禁。本补记仍仅修改本报告；继续以最终PR同步后的最新HEAD检查及handoff为准，不把旧HEAD的PR状态作为交付成功。
