@@ -23,6 +23,7 @@ Build a Windows-local desktop application that turns long livestream recordings 
 - Run relevant tests after every modification.
 - Update `docs/CURRENT_STATUS.md` when a task is completed.
 - Report failures and unverified facts honestly; never fabricate success.
+- Real GUI and browser UAT is performed manually by the user by default. Unless the user explicitly requests it, Codex must not use browser, computer use, or GUI automation to replace the user's acceptance of browser pages, video playback, audio, subtitle appearance, or interaction quality; Codex should focus on code, automated tests, CLI, PowerShell, FFmpeg/ffprobe, file validation, Git, Draft PRs, Actions, RESULT reports, and PR handoff.
 
 ## GitHub task workflow
 

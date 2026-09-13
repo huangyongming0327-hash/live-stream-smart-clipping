@@ -2,8 +2,14 @@ from __future__ import annotations
 
 import hashlib
 import http.client
+import inspect
 import json
+import os
+import re
+import shutil
+import subprocess
 import threading
+import time
 import urllib.request
 from contextlib import contextmanager
 from dataclasses import replace
@@ -15,7 +21,7 @@ from typing import Any, Iterator
 import pytest
 
 from liveclip.cli import build_parser, main
-from liveclip.media import FFmpegPaths, MediaProbe, StreamInfo
+from liveclip.media import FFmpegPaths, MediaProbe, StreamInfo, probe_media
 from liveclip.media.errors import (
     ProcessExecutionError,
     ProcessFailure,
@@ -26,6 +32,16 @@ from liveclip.review.exporter import (
     export_review_clip,
     render_timeline_srt,
     subtitle_font_size,
+)
+from liveclip.review.preview import (
+    CACHE_MARKER_CONTENT,
+    CACHE_MARKER_NAME,
+    PREVIEW_FILTER,
+    PreviewResult,
+    ensure_preview_proxy,
+    preview_ffmpeg_arguments,
+    preview_proxy_path,
+    validate_preview_proxy,
 )
 from liveclip.review.schema import (
     CompletedExport,
@@ -40,6 +56,7 @@ from liveclip.review.schema import (
 )
 from liveclip.review import server as server_module
 from liveclip.review import exporter as exporter_module
+from liveclip.review import preview as preview_module
 from liveclip.review.server import STATIC_ROOT, create_review_server
 
 
@@ -816,6 +833,1018 @@ def test_static_page_is_local_framework_free_and_defaults_unconfirmed() -> None:
     assert "视频字幕：已烧录" in javascript
     assert "独立字幕：已生成" in javascript
     assert "导出的 MP4 会包含画面内字幕，同时保留独立 SRT。" in html
+
+
+class FakePreviewProbe:
+    def __init__(
+        self,
+        source: Path,
+        *,
+        duration_ms: int = 30_000,
+        has_audio: bool = True,
+        valid: bool = True,
+    ) -> None:
+        self.source = source.resolve()
+        self.duration_ms = duration_ms
+        self.has_audio = has_audio
+        self.valid = valid
+        self.calls: list[Path] = []
+
+    def __call__(self, path: Path, **_: Any) -> MediaProbe:
+        resolved = Path(path).resolve()
+        self.calls.append(resolved)
+        is_source = resolved == self.source
+        if not is_source and resolved.read_bytes() == b"corrupt":
+            raise RuntimeError("corrupt cache")
+        codec = "h264" if is_source or self.valid else "vp9"
+        pixel_format = "yuv420p" if not is_source and self.valid else "yuv444p"
+        audio_codec = "aac" if is_source or self.valid else "opus"
+        return MediaProbe(
+            path=resolved,
+            container_format="mov,mp4,m4a,3gp,3g2,mj2",
+            duration_seconds=self.duration_ms / 1000,
+            file_size_bytes=resolved.stat().st_size,
+            video_streams=(
+                StreamInfo(
+                    0,
+                    "video",
+                    codec,
+                    width=1280,
+                    height=720,
+                    pixel_format=pixel_format,
+                    profile="Main",
+                    start_time_seconds=0.0,
+                ),
+            ),
+            audio_streams=(
+                (StreamInfo(
+                    1, "audio", audio_codec, sample_rate=48_000, channels=2,
+                    start_time_seconds=0.0,
+                ),)
+                if self.has_audio
+                else ()
+            ),
+        )
+
+
+def make_owned_preview_directory(inputs: ReviewInputs) -> Path:
+    output = preview_proxy_path(inputs)
+    output.parent.mkdir(parents=True)
+    (output.parent / CACHE_MARKER_NAME).write_bytes(CACHE_MARKER_CONTENT)
+    return output
+
+
+def create_windows_link(link: Path, target: Path, link_type: str) -> None:
+    if link_type == "Junction":
+        completed = subprocess.run(
+            ["cmd.exe", "/d", "/c", "mklink", "/J", str(link), str(target)],
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+        assert completed.returncode == 0, completed.stderr
+        return
+    os.symlink(target, link, target_is_directory=False)
+
+
+def test_preview_arguments_are_browser_compatible_low_resource_and_path_safe(
+    tmp_path: Path,
+) -> None:
+    special = tmp_path / "中文 空格 & (括号) O'Brien"
+    special.mkdir()
+    inputs, _, _ = make_review_inputs(special)
+    output = special / ".review_preview" / "part file.mp4"
+    command = tuple(str(value) for value in preview_ffmpeg_arguments(inputs, output))
+    assert command[command.index("-i") + 1] == str(inputs.video_path)
+    assert command[command.index("-c:v") + 1] == "libx264"
+    assert command[command.index("-profile:v") + 1] == "main"
+    assert command[command.index("-pix_fmt") + 1] == "yuv420p"
+    assert command[command.index("-preset") + 1] == "veryfast"
+    assert command[command.index("-crf") + 1] == "29"
+    assert command[command.index("-threads") + 1] == "2"
+    assert command[command.index("-c:a") + 1] == "aac"
+    assert command[command.index("-b:a") + 1] == "96k"
+    assert command[command.index("-ac") + 1] == "2"
+    assert command[command.index("-movflags") + 1] == "+faststart"
+    assert command[command.index("-vf") + 1] == PREVIEW_FILTER
+    assert command[command.index("-af") + 1].startswith("asetpts=PTS-STARTPTS")
+    assert "min(1280,iw)" in PREVIEW_FILTER
+    assert "min(720,ih)" in PREVIEW_FILTER
+    assert "force_original_aspect_ratio=decrease" in PREVIEW_FILTER
+    assert "force_divisible_by=2" in PREVIEW_FILTER
+    assert command[-1] == str(output)
+    assert "-avoid_negative_ts" not in command
+    assert "shell=False" in inspect.getsource(preview_module.run_process)
+
+    delayed = replace(inputs, video_start_time_seconds=0.0, audio_start_time_seconds=0.6)
+    delayed_filter = tuple(str(value) for value in preview_ffmpeg_arguments(delayed, output))
+    assert "adelay=600:all=1" in delayed_filter[delayed_filter.index("-af") + 1]
+
+    early = replace(inputs, video_start_time_seconds=0.6, audio_start_time_seconds=0.0)
+    early_filter = tuple(str(value) for value in preview_ffmpeg_arguments(early, output))
+    assert early_filter[early_filter.index("-af") + 1].startswith(
+        "asetpts=PTS-STARTPTS,atrim=start=0.600000,asetpts=PTS-STARTPTS"
+    )
+
+
+def test_preview_generation_is_atomic_source_bound_and_cached(tmp_path: Path) -> None:
+    inputs, _, paths = make_review_inputs(tmp_path)
+    probe = FakePreviewProbe(inputs.video_path)
+    ffmpeg = FakeFFmpeg()
+    before = {
+        inputs.video_path: inputs.video_path.read_bytes(),
+        inputs.timeline_path: inputs.timeline_path.read_bytes(),
+        inputs.analysis_path: inputs.analysis_path.read_bytes(),
+    }
+
+    first = ensure_preview_proxy(
+        inputs,
+        paths=paths,
+        process_function=ffmpeg,
+        probe_function=probe,
+    )
+    second = ensure_preview_proxy(
+        inputs,
+        paths=paths,
+        process_function=ffmpeg,
+        probe_function=probe,
+    )
+
+    assert first.cached is False
+    assert second.cached is True
+    assert first.path == preview_proxy_path(inputs)
+    assert inputs.video_sha256 in first.path.name
+    assert first.path.parent.parent == inputs.analysis_path.parent / ".review_preview"
+    assert first.path.parent.name == "v2"
+    assert first.path.read_bytes() == b"fake-h264-aac-mp4"
+    assert first.width == 1280 and first.height == 720
+    assert len(ffmpeg.calls) == 1
+    assert list(first.path.parent.glob("*.part.mp4")) == []
+    assert {path: path.read_bytes() for path in before} == before
+
+
+def test_corrupt_preview_is_rebuilt_and_partial_is_never_reused(tmp_path: Path) -> None:
+    inputs, _, paths = make_review_inputs(tmp_path)
+    probe = FakePreviewProbe(inputs.video_path)
+    output = ensure_preview_proxy(
+        inputs, paths=paths, process_function=FakeFFmpeg(), probe_function=probe
+    ).path
+    output.write_bytes(b"corrupt")
+    (output.parent / ".stale.part.mp4").write_bytes(b"partial")
+    ffmpeg = FakeFFmpeg()
+
+    result = ensure_preview_proxy(
+        inputs,
+        paths=paths,
+        process_function=ffmpeg,
+        probe_function=probe,
+    )
+
+    assert result.cached is False
+    assert output.read_bytes() == b"fake-h264-aac-mp4"
+    assert len(ffmpeg.calls) == 1
+    assert (output.parent / ".stale.part.mp4").read_bytes() == b"partial"
+
+
+@pytest.mark.parametrize("probe_valid", [True, False])
+def test_preview_failure_does_not_publish_or_leave_new_partial(
+    tmp_path: Path,
+    probe_valid: bool,
+) -> None:
+    inputs, _, paths = make_review_inputs(tmp_path)
+    output = ensure_preview_proxy(
+        inputs,
+        paths=paths,
+        process_function=FakeFFmpeg(),
+        probe_function=FakePreviewProbe(inputs.video_path),
+    ).path
+    output.write_bytes(b"corrupt")
+    probe = FakePreviewProbe(inputs.video_path, valid=probe_valid)
+    ffmpeg = FakeFFmpeg(fail=probe_valid)
+
+    with pytest.raises(ReviewError, match="兼容预览"):
+        ensure_preview_proxy(
+            inputs,
+            paths=paths,
+            process_function=ffmpeg,
+            probe_function=probe,
+        )
+
+    assert output.read_bytes() == b"corrupt"
+    assert list(output.parent.glob(".*.part.mp4")) == []
+
+
+def test_preview_without_source_audio_succeeds_without_audio_track(tmp_path: Path) -> None:
+    inputs, _, paths = make_review_inputs(tmp_path, has_audio=False)
+    probe = FakePreviewProbe(inputs.video_path, has_audio=False)
+    ffmpeg = FakeFFmpeg()
+    result = ensure_preview_proxy(
+        inputs,
+        paths=paths,
+        process_function=ffmpeg,
+        probe_function=probe,
+    )
+    command = ffmpeg.calls[0]
+    assert result.path.is_file()
+    assert "-c:a" not in command
+    assert "-af" not in command
+    assert validate_preview_proxy(
+        result.path,
+        inputs,
+        paths=paths,
+        probe_function=probe,
+    ) is not None
+
+
+def test_preview_validation_rejects_codec_pixel_format_size_duration_and_audio(
+    tmp_path: Path,
+) -> None:
+    inputs, _, paths = make_review_inputs(tmp_path)
+    output = ensure_preview_proxy(
+        inputs,
+        paths=paths,
+        process_function=FakeFFmpeg(),
+        probe_function=FakePreviewProbe(inputs.video_path),
+    ).path
+
+    def invalid_probe(_path: Path, **_: Any) -> MediaProbe:
+        return MediaProbe(
+            path=output,
+            container_format="mp4",
+            duration_seconds=27.0,
+            file_size_bytes=5,
+            video_streams=(
+                StreamInfo(0, "video", "vp9", width=1920, height=1080, pixel_format="yuv444p"),
+            ),
+            audio_streams=(StreamInfo(1, "audio", "opus"),),
+        )
+
+    assert validate_preview_proxy(
+        output,
+        inputs,
+        paths=paths,
+        probe_function=invalid_probe,
+    ) is None
+
+
+def test_preview_validation_rejects_cache_larger_than_source(tmp_path: Path) -> None:
+    inputs, _, paths = make_review_inputs(tmp_path)
+    output = make_owned_preview_directory(inputs)
+    output.write_bytes(b"fake-oversized-preview")
+
+    def oversized_probe(_path: Path, **_: Any) -> MediaProbe:
+        return MediaProbe(
+            path=output,
+            container_format="mp4",
+            duration_seconds=inputs.video_duration_ms / 1000,
+            file_size_bytes=output.stat().st_size,
+            video_streams=(
+                StreamInfo(
+                    0,
+                    "video",
+                    "h264",
+                    width=inputs.video_width + 2,
+                    height=inputs.video_height,
+                    pixel_format="yuv420p",
+                    profile="Main",
+                    start_time_seconds=0.0,
+                ),
+            ),
+            audio_streams=(
+                StreamInfo(1, "audio", "aac", start_time_seconds=0.0),
+            ),
+        )
+
+    assert validate_preview_proxy(
+        output,
+        inputs,
+        paths=paths,
+        probe_function=oversized_probe,
+    ) is None
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows reparse-point contract")
+def test_preview_rejects_junction_without_touching_external_sentinel(
+    tmp_path: Path,
+) -> None:
+    work = tmp_path / "work"
+    work.mkdir()
+    inputs, _, paths = make_review_inputs(work)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    external_cache = outside / "v2"
+    external_cache.mkdir()
+    sentinel = external_cache / preview_proxy_path(inputs).name
+    sentinel.write_bytes(b"external-user-sentinel")
+    create_windows_link(inputs.analysis_path.parent / ".review_preview", outside, "Junction")
+
+    with pytest.raises(ReviewError, match="普通目录"):
+        ensure_preview_proxy(
+            inputs,
+            paths=paths,
+            process_function=FakeFFmpeg(),
+            probe_function=FakePreviewProbe(inputs.video_path),
+        )
+
+    assert sentinel.read_bytes() == b"external-user-sentinel"
+    assert list(outside.rglob("*.part.mp4")) == []
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows reparse-point contract")
+def test_preview_rejects_file_symlink_and_preserves_external_target(
+    tmp_path: Path,
+) -> None:
+    work = tmp_path / "work"
+    work.mkdir()
+    inputs, _, paths = make_review_inputs(work)
+    output = make_owned_preview_directory(inputs)
+    sentinel = tmp_path / "outside-user-file.mp4"
+    sentinel.write_bytes(b"external-user-sentinel")
+    create_windows_link(output, sentinel, "SymbolicLink")
+
+    with pytest.raises(ReviewError, match="文件类型不安全"):
+        ensure_preview_proxy(
+            inputs,
+            paths=paths,
+            process_function=FakeFFmpeg(),
+            probe_function=FakePreviewProbe(inputs.video_path),
+        )
+
+    assert sentinel.read_bytes() == b"external-user-sentinel"
+    assert list(output.parent.glob("*.part.mp4")) == []
+
+
+def test_preview_rejects_unowned_sentinel_and_cache_parent_file(tmp_path: Path) -> None:
+    unowned = tmp_path / "unowned"
+    unowned.mkdir()
+    inputs, _, paths = make_review_inputs(unowned)
+    output = preview_proxy_path(inputs)
+    output.parent.mkdir(parents=True)
+    output.write_bytes(b"unknown-sentinel")
+    with pytest.raises(ReviewError, match="所有权标记"):
+        ensure_preview_proxy(
+            inputs,
+            paths=paths,
+            process_function=FakeFFmpeg(),
+            probe_function=FakePreviewProbe(inputs.video_path),
+        )
+    assert output.read_bytes() == b"unknown-sentinel"
+    assert list(output.parent.glob("*.part.mp4")) == []
+
+    occupied_root = tmp_path / "occupied"
+    occupied_root.mkdir()
+    occupied_inputs, _, occupied_paths = make_review_inputs(occupied_root)
+    occupied = occupied_inputs.analysis_path.parent / ".review_preview"
+    occupied.write_bytes(b"ordinary-user-file")
+    with pytest.raises(ReviewError, match="普通目录"):
+        ensure_preview_proxy(
+            occupied_inputs,
+            paths=occupied_paths,
+            process_function=FakeFFmpeg(),
+            probe_function=FakePreviewProbe(occupied_inputs.video_path),
+        )
+    assert occupied.read_bytes() == b"ordinary-user-file"
+
+
+def test_preview_rejects_abnormal_cache_target_and_rechecks_cached_inputs(
+    tmp_path: Path,
+) -> None:
+    inputs, _, paths = make_review_inputs(tmp_path)
+    output = make_owned_preview_directory(inputs)
+    output.mkdir()
+    with pytest.raises(ReviewError, match="文件类型不安全"):
+        ensure_preview_proxy(
+            inputs,
+            paths=paths,
+            process_function=FakeFFmpeg(),
+            probe_function=FakePreviewProbe(inputs.video_path),
+        )
+    assert list(output.parent.glob("*.part.mp4")) == []
+
+    hash_root = tmp_path / "hash"
+    hash_root.mkdir()
+    second_inputs, _, second_paths = make_review_inputs(hash_root)
+    probe = FakePreviewProbe(second_inputs.video_path)
+    ensure_preview_proxy(
+        second_inputs,
+        paths=second_paths,
+        process_function=FakeFFmpeg(),
+        probe_function=probe,
+    )
+    second_inputs.timeline_path.write_bytes(b"changed synthetic timeline")
+    with pytest.raises(ReviewError, match="发生变化"):
+        ensure_preview_proxy(
+            second_inputs,
+            paths=second_paths,
+            process_function=FakeFFmpeg(),
+            probe_function=probe,
+        )
+
+
+def test_preview_server_never_serves_unvalidated_existing_file(tmp_path: Path) -> None:
+    inputs, _, _ = make_review_inputs(tmp_path)
+    output = make_owned_preview_directory(inputs)
+    output.write_bytes(b"unvalidated-existing-file")
+    with running_server(inputs) as server:
+        status, _, _ = request(server, "GET", f"/media/preview?token={TOKEN}")
+    assert status == 404
+
+
+def local_real_ffmpeg_paths() -> FFmpegPaths:
+    root = Path(__file__).resolve().parents[1] / "tools" / "ffmpeg" / "bin"
+    paths = FFmpegPaths(root / "ffmpeg.exe", root / "ffprobe.exe")
+    if not paths.ffmpeg.is_file() or not paths.ffprobe.is_file():
+        pytest.skip("project-local FFmpeg is required for the real preview timeline test")
+    return paths
+
+
+def run_real_ffmpeg(paths: FFmpegPaths, *arguments: str | Path) -> subprocess.CompletedProcess[str]:
+    completed = subprocess.run(
+        [str(paths.ffmpeg), "-nostdin", "-hide_banner", "-loglevel", "info",
+         *(str(value) for value in arguments)],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    assert completed.returncode == 0, completed.stderr
+    return completed
+
+
+def test_preview_real_ffmpeg_preserves_delayed_audio_and_rejects_nonzero_cache(
+    tmp_path: Path,
+) -> None:
+    paths = local_real_ffmpeg_paths()
+    inputs, _, _ = make_review_inputs(tmp_path)
+    source = tmp_path / "延迟声音 & (0.6秒) O'Brien.mp4"
+    run_real_ffmpeg(
+        paths,
+        "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=12:duration=3",
+        "-itsoffset", "0.6", "-f", "lavfi", "-i", "sine=frequency=440:duration=2.4",
+        "-map", "0:v:0", "-map", "1:a:0", "-t", "3",
+        "-c:v", "libx264", "-threads", "2", "-pix_fmt", "yuv420p",
+        "-c:a", "aac", source,
+    )
+    source_probe = probe_media(source, paths=paths)
+    inputs = replace(
+        inputs,
+        video_path=source,
+        video_sha256=hashlib.sha256(source.read_bytes()).hexdigest(),
+        video_duration_ms=int(round(source_probe.duration_seconds * 1000)),
+        video_width=source_probe.video_streams[0].width,
+        video_height=source_probe.video_streams[0].height,
+        video_start_time_seconds=source_probe.video_streams[0].start_time_seconds or 0.0,
+        audio_start_time_seconds=source_probe.audio_streams[0].start_time_seconds,
+        has_audio=True,
+    )
+    before = {
+        path: hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in (inputs.video_path, inputs.timeline_path, inputs.analysis_path)
+    }
+
+    first = ensure_preview_proxy(inputs, paths=paths)
+    second = ensure_preview_proxy(inputs, paths=paths)
+    proxy_probe = probe_media(first.path, paths=paths)
+    assert first.cached is False and second.cached is True
+    assert proxy_probe.video_streams[0].start_time_seconds == pytest.approx(0.0, abs=0.05)
+    assert proxy_probe.audio_streams[0].start_time_seconds == pytest.approx(0.0, abs=0.05)
+    assert proxy_probe.duration_seconds == pytest.approx(
+        inputs.video_duration_ms / 1000, abs=1.0
+    )
+    silence = run_real_ffmpeg(
+        paths, "-i", first.path, "-af", "silencedetect=noise=-45dB:d=0.1",
+        "-f", "null", "NUL",
+    )
+    match = re.search(r"silence_end:\s*([0-9.]+)", silence.stderr)
+    assert match is not None
+    assert float(match.group(1)) == pytest.approx(0.6, abs=0.15)
+
+    shifted = tmp_path / "nonzero-start-cache.mp4"
+    run_real_ffmpeg(
+        paths, "-i", first.path, "-c", "copy", "-output_ts_offset", "0.5", shifted
+    )
+    first.path.write_bytes(shifted.read_bytes())
+    shifted_probe = probe_media(first.path, paths=paths)
+    assert shifted_probe.video_streams[0].start_time_seconds > 0.4
+    assert validate_preview_proxy(first.path, inputs, paths=paths) is None
+    assert list(first.path.parent.glob("*.part.mp4")) == []
+    assert before == {
+        path: hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in (inputs.video_path, inputs.timeline_path, inputs.analysis_path)
+    }
+
+
+def test_preview_real_ffmpeg_video_only_starts_at_zero_and_reuses_cache(
+    tmp_path: Path,
+) -> None:
+    paths = local_real_ffmpeg_paths()
+    inputs, _, _ = make_review_inputs(tmp_path, has_audio=False)
+    source = tmp_path / "无音频 小视频.mp4"
+    run_real_ffmpeg(
+        paths,
+        "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=12:duration=2",
+        "-c:v", "libx264", "-threads", "2", "-pix_fmt", "yuv420p", source,
+    )
+    source_probe = probe_media(source, paths=paths)
+    inputs = replace(
+        inputs,
+        video_path=source,
+        video_sha256=hashlib.sha256(source.read_bytes()).hexdigest(),
+        video_duration_ms=int(round(source_probe.duration_seconds * 1000)),
+        video_width=320,
+        video_height=180,
+        video_start_time_seconds=source_probe.video_streams[0].start_time_seconds or 0.0,
+        audio_start_time_seconds=None,
+        has_audio=False,
+    )
+    first = ensure_preview_proxy(inputs, paths=paths)
+    second = ensure_preview_proxy(inputs, paths=paths)
+    probe = probe_media(first.path, paths=paths)
+    assert first.cached is False and second.cached is True
+    assert probe.video_streams[0].start_time_seconds == pytest.approx(0.0, abs=0.05)
+    assert (probe.video_streams[0].width, probe.video_streams[0].height) == (320, 180)
+    assert not probe.audio_streams
+
+
+def test_preview_http_requires_token_supports_head_range_and_hides_paths(
+    tmp_path: Path,
+) -> None:
+    inputs, _, paths = make_review_inputs(tmp_path)
+    probe = FakePreviewProbe(inputs.video_path)
+    ffmpeg = FakeFFmpeg()
+
+    def generator(bound: ReviewInputs, **_: Any) -> PreviewResult:
+        return ensure_preview_proxy(
+            bound,
+            paths=paths,
+            process_function=ffmpeg,
+            probe_function=probe,
+        )
+
+    with running_server(inputs, preview_generator=generator, paths=paths) as server:
+        assert request(server, "GET", "/media/preview")[0] == 403
+        assert request(server, "GET", "/media/preview?token=wrong-token-000000")[0] == 403
+        status, _, body = request(server, "POST", f"/api/preview-proxy?token={TOKEN}")
+        assert status == 200
+        payload = json.loads(body)
+        assert payload["status"] == "ready" and payload["cached"] is False
+        assert str(inputs.video_path) not in body.decode("utf-8")
+        assert TOKEN not in body.decode("utf-8")
+
+        status, headers, body = request(
+            server,
+            "GET",
+            f"/media/preview?token={TOKEN}",
+            headers={"Range": "bytes=2-7"},
+        )
+        assert status == 206
+        assert headers["content-range"].startswith("bytes 2-7/")
+        assert body == b"ke-h26"
+        status, headers, body = request(
+            server,
+            "HEAD",
+            f"/media/preview?token={TOKEN}",
+        )
+        assert status == 200 and body == b""
+        assert headers["accept-ranges"] == "bytes"
+        assert request(
+            server,
+            "GET",
+            f"/media/preview?token={TOKEN}",
+            headers={"Range": "bytes=999999-"},
+        )[0] == 416
+        assert request(server, "GET", f"/%2e%2e/media/preview?token={TOKEN}")[0] == 400
+
+
+def test_concurrent_preview_requests_start_only_one_ffmpeg(tmp_path: Path) -> None:
+    inputs, _, paths = make_review_inputs(tmp_path)
+    probe = FakePreviewProbe(inputs.video_path)
+    calls = 0
+    calls_lock = threading.Lock()
+
+    def process(executable: Path, arguments: tuple[Any, ...], **_: Any) -> Any:
+        nonlocal calls
+        with calls_lock:
+            calls += 1
+        time.sleep(0.15)
+        Path(arguments[-1]).write_bytes(b"fake-h264-aac-mp4")
+        return SimpleNamespace(elapsed_seconds=0.15)
+
+    def generator(bound: ReviewInputs, **_: Any) -> PreviewResult:
+        return ensure_preview_proxy(
+            bound,
+            paths=paths,
+            process_function=process,
+            probe_function=probe,
+        )
+
+    with running_server(inputs, preview_generator=generator, paths=paths) as server:
+        responses: list[int] = []
+
+        def invoke() -> None:
+            responses.append(
+                request(server, "POST", f"/api/preview-proxy?token={TOKEN}")[0]
+            )
+
+        threads = [threading.Thread(target=invoke) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=3)
+
+    assert sorted(responses) == [200, 200]
+    assert calls == 1
+    assert preview_proxy_path(inputs).is_file()
+    assert list(preview_proxy_path(inputs).parent.glob(".*.part.mp4")) == []
+
+
+def test_repeated_preview_proxy_posts_reuse_ready_cache_without_ffmpeg(
+    tmp_path: Path,
+) -> None:
+    inputs, _, paths = make_review_inputs(tmp_path)
+    probe = FakePreviewProbe(inputs.video_path)
+    ffmpeg = FakeFFmpeg()
+
+    def generator(bound: ReviewInputs, **_: Any) -> PreviewResult:
+        return ensure_preview_proxy(
+            bound,
+            paths=paths,
+            process_function=ffmpeg,
+            probe_function=probe,
+        )
+
+    with running_server(inputs, preview_generator=generator, paths=paths) as server:
+        first_status, _, first_body = request(
+            server, "POST", f"/api/preview-proxy?token={TOKEN}"
+        )
+        second_status, _, second_body = request(
+            server, "POST", f"/api/preview-proxy?token={TOKEN}"
+        )
+
+    assert first_status == 200
+    assert second_status == 200
+    assert json.loads(first_body) == {
+        "status": "ready",
+        "cached": False,
+        "width": 1280,
+        "height": 720,
+        "file_size_bytes": len(b"fake-h264-aac-mp4"),
+    }
+    assert json.loads(second_body) == {
+        "status": "ready",
+        "cached": True,
+        "width": 1280,
+        "height": 720,
+        "file_size_bytes": len(b"fake-h264-aac-mp4"),
+    }
+    assert len(ffmpeg.calls) == 1
+
+
+def test_ui_defaults_to_original_and_has_single_fallback_state_machine() -> None:
+    html = (STATIC_ROOT / "review.html").read_text(encoding="utf-8")
+    javascript = (STATIC_ROOT / "review.js").read_text(encoding="utf-8")
+    assert 'elements.video.src = localUrl("/media")' in javascript
+    assert 'localUrl("/api/preview-proxy")' in javascript
+    assert 'elements.video.src = localUrl("/media/preview")' in javascript
+    assert "proxyRequested" not in javascript
+    assert "proxyReady" in javascript
+    assert "usingProxy" in javascript
+    assert "proxyFailed" in javascript
+    assert "proxyPlaybackFailed" in javascript
+    assert "proxyPromise" in javascript
+    assert "PLAY_START_TIMEOUT_MS" in javascript
+    assert "elements.video.videoWidth === 0" in javascript
+    assert "elements.video.videoHeight === 0" in javascript
+    assert "Promise.race([playPromise, timeout])" in javascript
+    assert 'addEventListener("error"' in javascript
+    assert "await requestPreviewProxy(true)" in javascript
+    assert "state.startMs" in javascript and "state.endMs" in javascript
+    assert "正式导出仍使用原视频" in javascript
+    assert "本版本不会生成预览代理" not in html + javascript
+
+
+def test_ui_ready_proxy_preview_actions_never_request_generation_again() -> None:
+    javascript = (STATIC_ROOT / "review.js").read_text(encoding="utf-8")
+    preview_handler = javascript.split(
+        'elements.previewRange.addEventListener("click", async () => {', 1
+    )[1].split("\n});", 1)[0]
+    candidate_handler = javascript.split("function selectCandidate(candidateId) {", 1)[
+        1
+    ].split("\n}", 1)[0]
+    request_function = javascript.split(
+        "async function requestPreviewProxy(playWhenReady) {", 1
+    )[1].split("\n}", 1)[0]
+
+    assert "if (state.usingProxy)" in preview_handler
+    ready_branch, original_branch = preview_handler.split("  try {", 1)
+    assert "await playReadyProxyRange();" in ready_branch
+    assert "return;" in ready_branch
+    assert "requestPreviewProxy" not in ready_branch
+    assert "await requestPreviewProxy(true);" in original_branch
+    assert "requestPreviewProxy" not in candidate_handler
+    assert "state.usingProxy || state.proxyReady" in request_function
+    assert "elements.video.play" not in request_function
+    assert request_function.count('fetch(localUrl("/api/preview-proxy")') == 1
+    assert request_function.index("if (state.proxyPromise)") < request_function.index(
+        'fetch(localUrl("/api/preview-proxy")'
+    )
+    assert request_function.index("state.proxyPlayRequested = true") < (
+        request_function.index("if (state.proxyPromise)")
+    )
+
+
+def test_ui_proxy_playback_error_is_not_recursive_generation_failure() -> None:
+    javascript = (STATIC_ROOT / "review.js").read_text(encoding="utf-8")
+    error_handler = javascript.split(
+        'elements.video.addEventListener("error", () => {', 1
+    )[1].split("\n});", 1)[0]
+    proxy_branch, original_branch = error_handler.split("  requestPreviewProxy(false);", 1)
+
+    assert "state.usingProxy || isPreviewMediaSource()" in proxy_branch
+    assert "showProxyPlaybackFailure();" in proxy_branch
+    assert "return;" in proxy_branch
+    assert "requestPreviewProxy" not in proxy_branch
+    assert original_branch.strip() == ""
+    assert "兼容预览播放失败" in javascript
+    assert "兼容预览生成失败" not in proxy_branch
+
+
+def test_ui_proxy_candidate_switch_preserves_ready_proxy_and_new_range(
+    tmp_path: Path,
+) -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node.js is required for the deterministic review.js state test")
+
+    harness = tmp_path / "review-state-test.cjs"
+    harness.write_text(
+        r'''
+const fs = require("fs");
+const vm = require("vm");
+
+class FakeElement {
+  constructor(id = "") {
+    this.id = id;
+    this.listeners = {};
+    this.children = [];
+    this.dataset = {};
+    this.classList = {toggle() {}};
+    this.textContent = "";
+    this.hidden = true;
+    this.disabled = false;
+    this.checked = false;
+    this.value = "";
+    this.currentTime = 0;
+    this.currentSrc = "";
+    this.src = "";
+    this.readyState = 4;
+    this.videoWidth = 1280;
+    this.videoHeight = 720;
+    this.seeking = false;
+    this.paused = true;
+    this.pauseCount = 0;
+    this.playCount = 0;
+  }
+  addEventListener(name, callback) { this.listeners[name] = callback; }
+  async emit(name) {
+    if (this.listeners[name]) return await this.listeners[name]({target: this});
+  }
+  append(...children) { this.children.push(...children); }
+  replaceChildren() { this.children = []; }
+  pause() { this.paused = true; this.pauseCount += 1; }
+  async play() { this.paused = false; this.playCount += 1; }
+  load() {
+    this.currentSrc = this.src;
+    Promise.resolve().then(() => this.emit("loadedmetadata"));
+  }
+}
+
+(async () => {
+  const ids = [
+    "sourceName", "candidateCount", "candidateList", "emptyCandidates",
+    "previewHeading", "reviewStatus", "video", "videoError", "currentTime",
+    "clipDuration", "startNumber", "endNumber", "startSlider", "endSlider",
+    "rangeError", "resetRange", "previewRange", "confirmExport", "exportButton",
+    "exportMessage",
+  ];
+  const byId = Object.fromEntries(ids.map((id) => [id, new FakeElement(id)]));
+  const created = [];
+  const session = {
+    video: {file_name: "source.mp4", duration_ms: 600000},
+    export_completed: false,
+    completed_export: null,
+    candidates: [
+      {id: "A", rank: 1, total_score: 90, title: "A", duration_ms: 24890,
+       reason: "r", risk: "", review_status: "pending",
+       original_start_ms: 575110, original_end_ms: 600000},
+      {id: "B", rank: 2, total_score: 80, title: "B", duration_ms: 35414,
+       reason: "r", risk: "", review_status: "pending",
+       original_start_ms: 329702, original_end_ms: 365116},
+    ],
+  };
+  const context = {
+    URL, URLSearchParams, Promise, Math, JSON,
+    proxyPosts: 0,
+    window: {
+      location: {search: "?token=0123456789abcdef", origin: "http://127.0.0.1:12345"},
+      setTimeout, clearTimeout,
+      setInterval() { return 1; },
+      clearInterval() {},
+      addEventListener() {},
+    },
+    document: {
+      querySelector(selector) { return byId[selector.slice(1)]; },
+      querySelectorAll(selector) {
+        if (selector === ".candidate-card") {
+          return created.filter((element) => element.className === "candidate-card");
+        }
+        return [];
+      },
+      createElement() {
+        const element = new FakeElement();
+        created.push(element);
+        return element;
+      },
+    },
+    fetch: async (url) => {
+      const path = new URL(url).pathname;
+      if (path === "/api/session") return {ok: true, json: async () => session};
+      if (path === "/api/preview-proxy") {
+        context.proxyPosts += 1;
+        return {ok: true, json: async () => ({status: "ready", cached: false})};
+      }
+      return {ok: true, json: async () => ({ok: true})};
+    },
+  };
+  vm.createContext(context);
+  vm.runInContext(fs.readFileSync(process.argv[2], "utf8"), context);
+  await new Promise((resolve) => setImmediate(resolve));
+  await vm.runInContext("requestPreviewProxy(false)", context);
+  await new Promise((resolve) => setImmediate(resolve));
+
+  await vm.runInContext("elements.previewRange.emit('click')", context);
+  vm.runInContext("elements.video.currentTime = 575.210", context);
+  await vm.runInContext("elements.video.emit('timeupdate')", context);
+  vm.runInContext("elements.video.currentTime = 600.106", context);
+  await vm.runInContext("elements.video.emit('timeupdate')", context);
+  vm.runInContext("selectCandidate('B')", context);
+  vm.runInContext("elements.video.currentTime = 600.106", context);
+  await vm.runInContext("elements.video.emit('timeupdate')", context);
+  const afterSwitch = JSON.parse(vm.runInContext(`JSON.stringify({
+    usingProxy: state.usingProxy,
+    proxyReady: state.proxyReady,
+    proxyPosts,
+    selected: state.selected.id,
+    startMs: state.startMs,
+    endMs: state.endMs,
+    currentTime: elements.video.currentTime,
+    currentLabel: elements.currentTime.textContent,
+    rangePreviewActive: state.rangePreviewActive,
+    message: elements.videoError.textContent,
+  })`, context));
+
+  await vm.runInContext("elements.video.emit('error')", context);
+  const afterSwitchError = JSON.parse(vm.runInContext(`JSON.stringify({
+    proxyPosts,
+    usingProxy: state.usingProxy,
+    message: elements.videoError.textContent,
+  })`, context));
+  await vm.runInContext("elements.previewRange.emit('click')", context);
+  vm.runInContext("elements.video.currentTime = 329.802", context);
+  await vm.runInContext("elements.video.emit('timeupdate')", context);
+  const duringB = JSON.parse(vm.runInContext(`JSON.stringify({
+    proxyPosts,
+    usingProxy: state.usingProxy,
+    currentTime: elements.video.currentTime,
+    rangePreviewActive: state.rangePreviewActive,
+    message: elements.videoError.textContent,
+  })`, context));
+  vm.runInContext("elements.video.currentTime = 365.116", context);
+  await vm.runInContext("elements.video.emit('timeupdate')", context);
+  const afterBEnd = JSON.parse(vm.runInContext(`JSON.stringify({
+    proxyPosts,
+    paused: elements.video.paused,
+    rangePreviewActive: state.rangePreviewActive,
+  })`, context));
+  process.stdout.write(JSON.stringify({afterSwitch, afterSwitchError, duringB, afterBEnd}));
+})().catch((error) => { console.error(error); process.exit(1); });
+''',
+        encoding="utf-8",
+    )
+    completed = subprocess.run(
+        [node, str(harness), str(STATIC_ROOT / "review.js")],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    assert completed.returncode == 0, completed.stderr
+    result = json.loads(completed.stdout)
+
+    assert result["afterSwitch"] == {
+        "usingProxy": True,
+        "proxyReady": True,
+        "proxyPosts": 1,
+        "selected": "B",
+        "startMs": 329702,
+        "endMs": 365116,
+        "currentTime": 329.702,
+        "currentLabel": "05:29.702",
+        "rangePreviewActive": False,
+        "message": "兼容预览已准备好。正式导出仍使用原视频，不影响成片画质。",
+    }
+    assert result["afterSwitchError"]["proxyPosts"] == 1
+    assert result["afterSwitchError"]["usingProxy"] is True
+    assert "生成失败" not in result["afterSwitchError"]["message"]
+    assert "播放失败" in result["afterSwitchError"]["message"]
+    assert result["duringB"] == {
+        "proxyPosts": 1,
+        "usingProxy": True,
+        "currentTime": 329.802,
+        "rangePreviewActive": True,
+        "message": "兼容预览已准备好。正式导出仍使用原视频，不影响成片画质。",
+    }
+    assert result["afterBEnd"] == {
+        "proxyPosts": 1,
+        "paused": True,
+        "rangePreviewActive": False,
+    }
+
+
+def test_ui_deferred_play_requests_are_generation_safe() -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node.js is required for the deterministic review.js state test")
+    harness = Path(__file__).with_name("review_deferred_play_test.cjs")
+    completed = subprocess.run(
+        [node, str(harness), str(STATIC_ROOT / "review.js")],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    assert completed.returncode == 0, completed.stderr
+    result = json.loads(completed.stdout)
+
+    for name in ("lateSuccess", "lateFailure"):
+        assert result[name]["paused"] is True
+        assert result[name]["active"] is False
+        assert result[name]["pendingStartMs"] is None
+        assert result[name]["proxyPosts"] == 1
+        assert "播放失败" in result[name]["message"]
+    for name, selected in (("oldLateAfterNew", "A"), ("switchDuringTimeout", "B")):
+        assert result[name]["selected"] == selected
+        assert result[name]["paused"] is True
+        assert result[name]["active"] is False
+        assert result[name]["proxyPosts"] == 1
+        assert "已准备好" in result[name]["message"]
+    assert result["consecutive"] == {
+        "selected": "B",
+        "paused": True,
+        "active": False,
+        "proxyPosts": 1,
+        "message": "兼容预览已准备好。正式导出仍使用原视频，不影响成片画质。",
+    }
+
+
+def test_export_api_receives_original_video_even_when_proxy_exists(tmp_path: Path) -> None:
+    inputs, _, _ = make_review_inputs(tmp_path)
+    proxy = preview_proxy_path(inputs)
+    proxy.parent.mkdir(parents=True)
+    proxy.write_bytes(b"preview-only")
+    seen: list[Path] = []
+
+    def fake_exporter(bound: ReviewInputs, **kwargs: Any) -> ExportResult:
+        seen.append(bound.video_path)
+        assert bound.video_path != proxy
+        return ExportResult(
+            bound.output_dir / "formal.mp4",
+            bound.output_dir / "formal.srt",
+            bound.review_path,
+            1,
+            kwargs["end_ms"] - kwargs["start_ms"],
+            0.1,
+            True,
+        )
+
+    payload = {
+        "candidate_id": "clip-001",
+        "start_ms": 4_000,
+        "end_ms": 22_500,
+        "confirmed": True,
+    }
+    with running_server(inputs, exporter=fake_exporter) as server:
+        status, _, _ = request(
+            server,
+            "POST",
+            f"/api/export?token={TOKEN}",
+            body=payload,
+        )
+    assert status == 200
+    assert seen == [inputs.video_path]
+    assert proxy.parent != inputs.output_dir
 
 
 def test_existing_completed_review_is_displayed_without_absolute_paths(tmp_path: Path) -> None:

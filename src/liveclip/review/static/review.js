@@ -1,6 +1,7 @@
 "use strict";
 
 const token = new URLSearchParams(window.location.search).get("token") || "";
+const PLAY_START_TIMEOUT_MS = 3000;
 const elements = {
   sourceName: document.querySelector("#sourceName"),
   candidateCount: document.querySelector("#candidateCount"),
@@ -30,6 +31,16 @@ const state = {
   startMs: 0,
   endMs: 0,
   exporting: false,
+  proxyReady: false,
+  usingProxy: false,
+  proxyFailed: false,
+  proxyPlaybackFailed: false,
+  proxyPromise: null,
+  proxyPlayRequested: false,
+  rangePreviewActive: false,
+  pendingStartMs: null,
+  playRequestId: 0,
+  activePlayRequestId: null,
 };
 
 function localUrl(path) {
@@ -48,6 +59,137 @@ function formatClock(milliseconds) {
 
 function seconds(milliseconds) {
   return (milliseconds / 1000).toFixed(3);
+}
+
+function showPreviewMessage(message, kind) {
+  elements.videoError.textContent = message;
+  elements.videoError.dataset.kind = kind;
+  elements.videoError.hidden = false;
+}
+
+function invalidateRangePlayback() {
+  state.playRequestId += 1;
+  state.activePlayRequestId = null;
+  state.rangePreviewActive = false;
+  state.pendingStartMs = null;
+  elements.video.pause();
+}
+
+async function playSelectedRange() {
+  invalidateRangePlayback();
+  const requestId = state.playRequestId;
+  state.pendingStartMs = state.startMs;
+  elements.video.currentTime = state.startMs / 1000;
+  const playPromise = Promise.resolve().then(() => elements.video.play());
+  playPromise.then(
+    () => {
+      if (
+        requestId !== state.playRequestId &&
+        state.activePlayRequestId !== state.playRequestId
+      ) {
+        elements.video.pause();
+      }
+    },
+    () => {},
+  );
+  let timeoutId;
+  const timeout = new Promise((_resolve, reject) => {
+    timeoutId = window.setTimeout(
+      () => reject(new Error("本地视频播放启动超时。")),
+      PLAY_START_TIMEOUT_MS,
+    );
+  });
+  try {
+    await Promise.race([playPromise, timeout]);
+  } catch (error) {
+    if (requestId !== state.playRequestId) return false;
+    invalidateRangePlayback();
+    throw { liveclipCurrentPlayFailure: true, cause: error };
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
+  if (requestId !== state.playRequestId) return false;
+  state.activePlayRequestId = requestId;
+  state.rangePreviewActive = true;
+  return true;
+}
+
+function showProxyReady() {
+  showPreviewMessage(
+    "兼容预览已准备好。正式导出仍使用原视频，不影响成片画质。",
+    "ready",
+  );
+}
+
+function showProxyPlaybackFailure() {
+  invalidateRangePlayback();
+  state.proxyPlaybackFailed = true;
+  state.proxyPlayRequested = false;
+  showPreviewMessage(
+    "兼容预览播放失败，请暂停后重试。请不要勾选确认导出。",
+    "failed",
+  );
+}
+
+async function playReadyProxyRange() {
+  try {
+    const started = await playSelectedRange();
+    if (!started) return;
+    state.proxyPlaybackFailed = false;
+    showProxyReady();
+  } catch (error) {
+    if (!error.liveclipCurrentPlayFailure) return;
+    showProxyPlaybackFailure();
+  }
+}
+
+function isPreviewMediaSource() {
+  try {
+    return new URL(elements.video.currentSrc || elements.video.src).pathname === "/media/preview";
+  } catch (_error) {
+    return false;
+  }
+}
+
+async function requestPreviewProxy(playWhenReady) {
+  if (state.usingProxy || state.proxyReady) return;
+  if (state.proxyFailed) return;
+  if (playWhenReady) state.proxyPlayRequested = true;
+  if (state.proxyPromise) return state.proxyPromise;
+
+  showPreviewMessage(
+    "当前视频编码浏览器不支持，正在生成兼容预览…首次需要一点时间，后续会直接复用。",
+    "working",
+  );
+  state.proxyPromise = (async () => {
+    const response = await fetch(localUrl("/api/preview-proxy"), {
+      method: "POST",
+      credentials: "omit",
+      cache: "no-store",
+    });
+    const payload = await response.json();
+    if (!response.ok || payload.status !== "ready") {
+      throw new Error(payload.error || "兼容预览生成失败。");
+    }
+    state.proxyReady = true;
+    state.proxyFailed = false;
+    state.proxyPlaybackFailed = false;
+    showProxyReady();
+    invalidateRangePlayback();
+    elements.video.src = localUrl("/media/preview");
+    state.usingProxy = true;
+    elements.video.load();
+  })().catch((_error) => {
+    state.proxyFailed = true;
+    state.proxyPlayRequested = false;
+    showPreviewMessage(
+      "兼容预览生成失败，暂时无法人工预览。请不要勾选确认导出。",
+      "failed",
+    );
+  }).finally(() => {
+    state.proxyPromise = null;
+  });
+  return state.proxyPromise;
 }
 
 function controlsEnabled(enabled) {
@@ -156,15 +298,18 @@ function selectCandidate(candidateId) {
   elements.reviewStatus.textContent = state.selected.review_status;
   elements.confirmExport.checked = false;
   controlsEnabled(!state.session.export_completed);
+  invalidateRangePlayback();
   setRange(state.selected.original_start_ms, state.selected.original_end_ms);
-  elements.video.pause();
+  state.pendingStartMs = state.startMs;
   elements.video.currentTime = state.startMs / 1000;
+  elements.currentTime.textContent = formatClock(state.startMs);
   elements.exportMessage.textContent = state.session.completed_export
     ? exportDetailsMessage(state.session.completed_export, "此前已导出。")
     : "";
 }
 
 async function loadSession() {
+  const firstLoad = state.session === null;
   const response = await fetch(localUrl("/api/session"), {cache: "no-store", credentials: "omit"});
   const payload = await response.json();
   if (!response.ok) throw new Error(payload.error || "无法读取审核数据。");
@@ -174,7 +319,9 @@ async function loadSession() {
   [elements.startSlider, elements.endSlider, elements.startNumber, elements.endNumber].forEach((input) => {
     input.max = maximum;
   });
-  elements.video.src = localUrl("/media");
+  if (firstLoad) {
+    elements.video.src = localUrl("/media");
+  }
   renderCandidates();
   if (payload.candidates.length) selectCandidate(payload.candidates[0].id);
   else controlsEnabled(false);
@@ -218,21 +365,75 @@ elements.resetRange.addEventListener("click", () => {
 
 elements.previewRange.addEventListener("click", async () => {
   if (!validRange()) return;
-  elements.video.currentTime = state.startMs / 1000;
+  if (state.usingProxy) {
+    await playReadyProxyRange();
+    return;
+  }
   try {
-    await elements.video.play();
-  } catch (_error) {
-    elements.videoError.hidden = false;
+    await playSelectedRange();
+  } catch (error) {
+    if (!error.liveclipCurrentPlayFailure) return;
+    await requestPreviewProxy(true);
   }
 });
 
 elements.video.addEventListener("timeupdate", () => {
-  elements.currentTime.textContent = formatClock(elements.video.currentTime * 1000);
-  if (state.selected && elements.video.currentTime * 1000 >= state.endMs) {
+  const currentMs = elements.video.currentTime * 1000;
+  if (state.pendingStartMs !== null) {
+    if (Math.abs(currentMs - state.pendingStartMs) > 250) {
+      elements.video.currentTime = state.pendingStartMs / 1000;
+      elements.currentTime.textContent = formatClock(state.pendingStartMs);
+      return;
+    }
+    state.pendingStartMs = null;
+  }
+  elements.currentTime.textContent = formatClock(currentMs);
+  if (
+    state.rangePreviewActive &&
+    state.selected &&
+    !elements.video.seeking &&
+    currentMs >= state.endMs
+  ) {
+    state.rangePreviewActive = false;
+    state.activePlayRequestId = null;
     elements.video.pause();
   }
 });
-elements.video.addEventListener("error", () => { elements.videoError.hidden = false; });
+elements.video.addEventListener("loadedmetadata", async () => {
+  if (!state.usingProxy) {
+    if (elements.video.videoWidth === 0 || elements.video.videoHeight === 0) {
+      await requestPreviewProxy(false);
+    }
+    return;
+  }
+  if (!isPreviewMediaSource()) return;
+  elements.video.currentTime = state.startMs / 1000;
+  if (!state.proxyPlayRequested) return;
+  state.proxyPlayRequested = false;
+  await playReadyProxyRange();
+});
+elements.video.addEventListener("play", () => {
+  if (state.usingProxy) return;
+  window.setTimeout(() => {
+    if (
+      !state.usingProxy &&
+      (
+        elements.video.readyState === 0 ||
+        elements.video.videoWidth === 0 ||
+        elements.video.videoHeight === 0
+      )
+    ) {
+      requestPreviewProxy(false);
+    }
+  }, PLAY_START_TIMEOUT_MS);
+});
+elements.video.addEventListener("error", () => {
+  if (state.usingProxy || isPreviewMediaSource()) {
+    showProxyPlaybackFailure();
+    return;
+  }
+  requestPreviewProxy(false);
+});
 elements.confirmExport.addEventListener("change", updateExportGate);
 
 elements.exportButton.addEventListener("click", async () => {
