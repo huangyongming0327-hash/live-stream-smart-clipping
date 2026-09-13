@@ -158,6 +158,16 @@
 - 正式导出仍从原视频生成 H.264/AAC 成片，烧录字幕可见且独立 SRT 存在；原视频、timeline、
   analysis SHA 前后不变。专项为 69 passed；source-only 为 268 passed/1 deselected、ASR
   91 passed/2 deselected，均 0 failed，`pip check` 通过。
+- TASK-005-FIX2 已关闭独立审核的三个阻断：版本化所有权缓存拒绝 Windows junction/reparse
+  point、symlink 和异常类型；`/media/preview` 只提供当前服务成功验证的代理；播放请求代次
+  隔离超时后的迟到 `play()`；代理保留音频相对视频的起始偏移并校验视频零起点与完整时间轴。
+- FIX2 真实定向结果：Windows 路径安全 `5 passed`，生产 `review.js` Node deferred-play
+  `1 passed`，真实 FFmpeg 时间轴 `2 passed`，review/proxy 全项 `78 passed`，媒体解析
+  `29 passed`。source-only 为基础 `277 passed/1 deselected`、ASR `91 passed/2 deselected`，
+  `pip check` 通过。
+- 完整 `pytest tests -q` 为 `314 passed, 2 failed`；两项既有失败均来自 FFmpeg 安装器隔离
+  测试中的子 PowerShell `CommandNotFoundException`，FIX2 未修改无关安装器。用户既有真实 GUI
+  UAT 继续作为产品验收证据，本次安全与竞态修复不需要 Codex 追加 GUI 自动化。
 
 ## TASK-006
 
@@ -293,13 +303,13 @@
 - TASK-005 已通过独立审核并合并。
 - TASK-006 已通过独立审核并合并。
 - TASK-007 及修复已进入当前 `master`，字幕烧录与独立 SRT 基线继续有效。
-- TASK-005-FIX 本地实现、自动测试、真实 FFmpeg、用户真实浏览器人工 UAT 和输入哈希复核已完成；等待
-  Draft PR latest-head 三项检查和最终 handoff。
+- TASK-005-FIX2 代码、自动测试、真实 Windows/FFmpeg 探针和文档已完成；等待 Draft PR #11
+  latest-head 三项检查和最终 handoff，之后交由独立审核 Codex 执行 TASK-005-FIX-R2。
 
 ## 建议下一步
 
-- 下一步只发布 TASK-005-FIX Draft PR，等待 latest-head 三项 Actions 并生成完整 handoff；
-  保持 Draft，不执行 Ready、merge、auto-merge 或 TASK-008。
+- 下一步只更新现有 TASK-005-FIX Draft PR #11，等待 latest-head 三项 Actions 并生成完整
+  handoff；保持 Draft，不执行 Ready、merge、auto-merge 或 TASK-008。
 
 ## 约束核验
 

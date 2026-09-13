@@ -21,6 +21,8 @@ class StreamInfo:
     width: int | None = None
     height: int | None = None
     pixel_format: str | None = None
+    profile: str | None = None
+    start_time_seconds: float | None = None
     frame_rate: float | None = None
     sample_rate: int | None = None
     channels: int | None = None
@@ -35,6 +37,7 @@ class MediaProbe:
     file_size_bytes: int
     video_streams: tuple[StreamInfo, ...]
     audio_streams: tuple[StreamInfo, ...]
+    container_start_time_seconds: float | None = None
 
     @property
     def video_stream_count(self) -> int:
@@ -71,6 +74,14 @@ def _optional_int(value: object) -> int | None:
         return int(value) if value not in (None, "", "N/A") else None
     except (TypeError, ValueError):
         return None
+
+
+def _optional_finite_float(value: object) -> float | None:
+    try:
+        result = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    return result if math.isfinite(result) else None
 
 
 def _duration(format_data: dict[str, Any], streams: list[dict[str, Any]]) -> float:
@@ -119,6 +130,8 @@ def parse_probe_json(
                 pixel_format=(
                     str(item["pix_fmt"]) if item.get("pix_fmt") else None
                 ),
+                profile=(str(item["profile"]) if item.get("profile") else None),
+                start_time_seconds=_optional_finite_float(item.get("start_time")),
                 frame_rate=parse_frame_rate(
                     item.get("avg_frame_rate") or item.get("r_frame_rate")
                 ),
@@ -144,6 +157,9 @@ def parse_probe_json(
         file_size_bytes=size,
         video_streams=tuple(s for s in streams if s.codec_type == "video"),
         audio_streams=tuple(s for s in streams if s.codec_type == "audio"),
+        container_start_time_seconds=_optional_finite_float(
+            format_data.get("start_time")
+        ),
     )
     if require_audio and not result.has_audio:
         raise NoAudioStreamError(f"Media has no audio stream: {path}")

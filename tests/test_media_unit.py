@@ -39,6 +39,8 @@ def sample_probe_payload(*, audio: bool = True) -> dict:
             "index": 0,
             "codec_type": "video",
             "codec_name": "h264",
+            "profile": "Main",
+            "start_time": "0.125000",
             "width": 640,
             "height": 360,
             "avg_frame_rate": "30000/1001",
@@ -50,6 +52,7 @@ def sample_probe_payload(*, audio: bool = True) -> dict:
                 "index": 1,
                 "codec_type": "audio",
                 "codec_name": "aac",
+                "start_time": "0.625000",
                 "sample_rate": "48000",
                 "channels": 2,
                 "channel_layout": "stereo",
@@ -60,6 +63,7 @@ def sample_probe_payload(*, audio: bool = True) -> dict:
         "format": {
             "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
             "duration": "12.000000",
+            "start_time": "0.100000",
             "size": "123456",
         },
     }
@@ -77,6 +81,10 @@ def test_ffprobe_json_parsing_and_stream_counts(tmp_path: Path) -> None:
     assert probe.has_audio
     assert probe.video_streams[0].width == 640
     assert probe.video_streams[0].height == 360
+    assert probe.video_streams[0].profile == "Main"
+    assert probe.video_streams[0].start_time_seconds == pytest.approx(0.125)
+    assert probe.audio_streams[0].start_time_seconds == pytest.approx(0.625)
+    assert probe.container_start_time_seconds == pytest.approx(0.1)
     assert probe.video_streams[0].frame_rate == pytest.approx(29.97002997)
 
 

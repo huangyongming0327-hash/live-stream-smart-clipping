@@ -18,7 +18,7 @@ from urllib.parse import parse_qs, quote, unquote, urlsplit
 from liveclip.media import FFmpegPaths
 
 from .exporter import ExportResult, export_review_clip
-from .preview import PreviewResult, ensure_preview_proxy, preview_proxy_path
+from .preview import PreviewResult, ensure_preview_proxy, validate_preview_media_path
 from .schema import (
     CompletedExport,
     ReviewConflictError,
@@ -61,7 +61,7 @@ class ReviewApplication:
         self.paths = paths
         self.export_lock = threading.Lock()
         self.preview_lock = threading.Lock()
-        self.preview_path = preview_proxy_path(inputs)
+        self.preview_path: Path | None = None
         self.completed_export = load_completed_export(inputs)
         self.exported_candidate_id: str | None = (
             self.completed_export.candidate_id
@@ -351,8 +351,26 @@ class ReviewRequestHandler(BaseHTTPRequestHandler):
                 missing_message="原视频暂时不可读。",
             )
         elif path == "/media/preview":
+            if self.app.preview_path is None:
+                self._send_json(
+                    HTTPStatus.NOT_FOUND,
+                    {"error": "兼容预览尚未准备好。"},
+                )
+                return
+            try:
+                preview_path = validate_preview_media_path(
+                    self.app.preview_path,
+                    self.app.inputs,
+                )
+            except ReviewError:
+                self.app.preview_path = None
+                self._send_json(
+                    HTTPStatus.NOT_FOUND,
+                    {"error": "兼容预览尚未准备好。"},
+                )
+                return
             self._send_media(
-                self.app.preview_path,
+                preview_path,
                 head_only=head_only,
                 missing_message="兼容预览尚未准备好。",
                 missing_status=HTTPStatus.NOT_FOUND,
@@ -381,6 +399,10 @@ class ReviewRequestHandler(BaseHTTPRequestHandler):
                     result = self.app.preview_generator(
                         self.app.inputs,
                         paths=self.app.paths,
+                    )
+                    self.app.preview_path = validate_preview_media_path(
+                        result.path,
+                        self.app.inputs,
                     )
                 self._send_json(
                     HTTPStatus.OK,

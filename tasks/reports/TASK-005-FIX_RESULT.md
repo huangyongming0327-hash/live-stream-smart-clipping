@@ -130,3 +130,61 @@ analysis、review 或用户数据。
 
 交付只创建 Draft PR。不会 Ready、merge、auto-merge 或 force push。GitHub latest-head 三项
 Actions 状态以最终 `PR_HANDOFF` 为准。
+
+## 9. TASK-005-FIX2 独立审核阻断修复
+
+### B1：缓存路径与媒体提供
+
+缓存使用严格解析的 `analysis_path.parent` 作为受控根目录，并迁移到版本化
+`.review_preview/v2`。v2 目录必须包含内容匹配的 LiveClip 所有权标记；目录、标记、缓存和
+本次 `.part` 均用 `lstat` 判断真实类型，Windows 同时检查 reparse-point 属性。读取缓存、启动
+FFmpeg 前、校验 `.part`、原子发布前、发布后和 `/media/preview` 提供前都会重新验证路径。
+未知目录或同名文件不会被删除或覆盖，LiveClip 已拥有目录中的损坏普通缓存可以安全重建。
+
+服务启动时的代理路径为空；只有当前服务的代理 POST 完成且路径验证成功后才登记可提供文件。
+因此任意预先存在的固定路径无法直接由 `/media/preview` 读取，正常 v2 缓存仍可在服务重启后的
+首次代理请求中复用。
+
+真实 Windows 定向测试 `5 passed`，覆盖 `.review_preview` junction、缓存目标文件 symlink、
+未知同名哨兵、缓存目录被普通文件占用、异常目标类型、外部哨兵不变、无越界写入、无本次
+`.part` 残留，以及真实普通目录的首次生成和复用。
+
+### B2：播放请求代次
+
+生产 `review.js` 为每次区间播放分配递增代次。超时、候选切换、媒体源切换或新预览会使旧代次
+失效，并同步清理 `rangePreviewActive`、`pendingStartMs` 和当前有效播放代次。旧 Promise 迟到
+成功时，只在没有更新且已生效的播放请求时暂停；迟到失败被消费且不能改写新请求的状态或提示。
+当前有效播放仍在候选 `end_ms` 自动暂停。
+
+新增 Node VM 确定性测试直接载入生产 `review.js`，而非匹配源码字符串。定向结果 `1 passed`，
+覆盖超时后迟到成功、迟到失败、旧请求返回前开始新预览、超时期间切换候选、连续点击与 A→B→A；
+全部场景代理 POST 均为 1，未递归生成，旧结果未覆盖新状态，当前候选按 `end_ms` 停止。
+
+### B3：音视频相对时间轴
+
+ffprobe 解析扩展为保存 profile、各流 `start_time` 和容器 `start_time`。视频流归零后，音频相对
+视频较晚时按差值补开头静音，较早时从视频零点裁剪，再补齐/裁剪到完整视频时长。代理校验要求
+H.264 Main / yuv420p、视频零起点、含音频时 AAC 和音频输出零起点、完整时长、正确比例，并
+拒绝宽高大于原视频或 1280×720 上限的缓存。缓存契约提升到 v2，旧代理不会命中。
+
+真实 FFmpeg 定向测试 `2 passed`：3 秒视频与延迟约 0.6 秒的正弦音输入生成后，视频/音频流起点
+均在 0±0.05 秒，静音探针确认可听内容仍约从 0.6±0.15 秒开始，完整时长在 1 秒容差内；使用
+`-output_ts_offset 0.5` 制作的非零起点伪缓存被拒绝。另一个 320×180 无音频样本保持原尺寸、
+视频零起点且没有强造音轨。两者第二次均命中缓存，视频、timeline、analysis SHA 不变，无
+`.part` 残留。
+
+### 回归与已知环境问题
+
+- `python -m pytest tests/test_review_and_export.py -q`：`78 passed`；
+- 媒体解析：`29 passed`；JavaScript 生产文件和 Node harness 语法检查通过；
+- 完整 source-only：基础 `277 passed, 1 deselected`，ASR `91 passed, 2 deselected`，三个
+  stage 退出码为 0；`pip check` 为 `No broken requirements found.`；
+- 完整 `python -m pytest tests -q`：`314 passed, 2 failed`。失败仍位于既有
+  `test_ffmpeg_install_source.py` 两项安装器隔离测试，子 PowerShell 在应进入 SHA 不匹配或解压
+  失败分支前报 `CommandNotFoundException`。本任务没有修改该无关安装器，也未将完整 pytest
+  写成通过。
+
+本次未补做 GUI UAT：用户已完成原功能真实 GUI 验收，FIX2 的新增行为均由真实 Windows 文件
+系统、Node 延迟 Promise 和真实 FFmpeg 时间轴探针直接覆盖。转码关闭/取消、GPU/硬件编码、
+HLS、多清晰度、批量视频、多候选批量导出和 TASK-008 继续保留。独立审核报告未修改，下一步
+只能由独立审核 Codex 执行 TASK-005-FIX-R2。

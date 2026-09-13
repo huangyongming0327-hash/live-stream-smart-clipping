@@ -48,6 +48,8 @@ class ReviewInputs:
     video_duration_ms: int
     video_width: int
     video_height: int
+    video_start_time_seconds: float
+    audio_start_time_seconds: float | None
     video_sha256: str
     timeline_sha256: str
     analysis_sha256: str
@@ -154,6 +156,18 @@ def bind_review_inputs(
     ):
         raise ReviewError("原视频必须包含可读取的视频尺寸。")
     video_duration_ms = int(round(video_probe.duration_seconds * 1000))
+    video_start_time_seconds = (
+        video_probe.video_streams[0].start_time_seconds
+        if video_probe.video_streams[0].start_time_seconds is not None
+        else (video_probe.container_start_time_seconds or 0.0)
+    )
+    audio_start_time_seconds = (
+        video_probe.audio_streams[0].start_time_seconds
+        if video_probe.audio_streams
+        else None
+    )
+    if audio_start_time_seconds is None and video_probe.audio_streams:
+        audio_start_time_seconds = video_probe.container_start_time_seconds or 0.0
 
     timeline_data, timeline_raw = _read_json(timeline_path, "timeline")
     try:
@@ -211,6 +225,8 @@ def bind_review_inputs(
         video_duration_ms=video_duration_ms,
         video_width=video_width,
         video_height=video_height,
+        video_start_time_seconds=video_start_time_seconds,
+        audio_start_time_seconds=audio_start_time_seconds,
         video_sha256=video_sha256,
         timeline_sha256=timeline_sha256,
         analysis_sha256=hashlib.sha256(analysis_raw).hexdigest(),

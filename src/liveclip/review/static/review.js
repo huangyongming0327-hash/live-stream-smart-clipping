@@ -31,7 +31,6 @@ const state = {
   startMs: 0,
   endMs: 0,
   exporting: false,
-  proxyRequested: false,
   proxyReady: false,
   usingProxy: false,
   proxyFailed: false,
@@ -40,6 +39,8 @@ const state = {
   proxyPlayRequested: false,
   rangePreviewActive: false,
   pendingStartMs: null,
+  playRequestId: 0,
+  activePlayRequestId: null,
 };
 
 function localUrl(path) {
@@ -66,11 +67,31 @@ function showPreviewMessage(message, kind) {
   elements.videoError.hidden = false;
 }
 
-async function playSelectedRange() {
+function invalidateRangePlayback() {
+  state.playRequestId += 1;
+  state.activePlayRequestId = null;
   state.rangePreviewActive = false;
-  state.pendingStartMs = state.startMs;
+  state.pendingStartMs = null;
   elements.video.pause();
+}
+
+async function playSelectedRange() {
+  invalidateRangePlayback();
+  const requestId = state.playRequestId;
+  state.pendingStartMs = state.startMs;
   elements.video.currentTime = state.startMs / 1000;
+  const playPromise = Promise.resolve().then(() => elements.video.play());
+  playPromise.then(
+    () => {
+      if (
+        requestId !== state.playRequestId &&
+        state.activePlayRequestId !== state.playRequestId
+      ) {
+        elements.video.pause();
+      }
+    },
+    () => {},
+  );
   let timeoutId;
   const timeout = new Promise((_resolve, reject) => {
     timeoutId = window.setTimeout(
@@ -79,11 +100,18 @@ async function playSelectedRange() {
     );
   });
   try {
-    await Promise.race([elements.video.play(), timeout]);
-    state.rangePreviewActive = true;
+    await Promise.race([playPromise, timeout]);
+  } catch (error) {
+    if (requestId !== state.playRequestId) return false;
+    invalidateRangePlayback();
+    throw { liveclipCurrentPlayFailure: true, cause: error };
   } finally {
     window.clearTimeout(timeoutId);
   }
+  if (requestId !== state.playRequestId) return false;
+  state.activePlayRequestId = requestId;
+  state.rangePreviewActive = true;
+  return true;
 }
 
 function showProxyReady() {
@@ -94,7 +122,7 @@ function showProxyReady() {
 }
 
 function showProxyPlaybackFailure() {
-  state.rangePreviewActive = false;
+  invalidateRangePlayback();
   state.proxyPlaybackFailed = true;
   state.proxyPlayRequested = false;
   showPreviewMessage(
@@ -105,11 +133,12 @@ function showProxyPlaybackFailure() {
 
 async function playReadyProxyRange() {
   try {
-    await playSelectedRange();
+    const started = await playSelectedRange();
+    if (!started) return;
     state.proxyPlaybackFailed = false;
     showProxyReady();
-  } catch (_error) {
-    state.pendingStartMs = null;
+  } catch (error) {
+    if (!error.liveclipCurrentPlayFailure) return;
     showProxyPlaybackFailure();
   }
 }
@@ -128,7 +157,6 @@ async function requestPreviewProxy(playWhenReady) {
   if (playWhenReady) state.proxyPlayRequested = true;
   if (state.proxyPromise) return state.proxyPromise;
 
-  state.proxyRequested = true;
   showPreviewMessage(
     "当前视频编码浏览器不支持，正在生成兼容预览…首次需要一点时间，后续会直接复用。",
     "working",
@@ -147,6 +175,7 @@ async function requestPreviewProxy(playWhenReady) {
     state.proxyFailed = false;
     state.proxyPlaybackFailed = false;
     showProxyReady();
+    invalidateRangePlayback();
     elements.video.src = localUrl("/media/preview");
     state.usingProxy = true;
     elements.video.load();
@@ -269,8 +298,7 @@ function selectCandidate(candidateId) {
   elements.reviewStatus.textContent = state.selected.review_status;
   elements.confirmExport.checked = false;
   controlsEnabled(!state.session.export_completed);
-  state.rangePreviewActive = false;
-  elements.video.pause();
+  invalidateRangePlayback();
   setRange(state.selected.original_start_ms, state.selected.original_end_ms);
   state.pendingStartMs = state.startMs;
   elements.video.currentTime = state.startMs / 1000;
@@ -343,7 +371,8 @@ elements.previewRange.addEventListener("click", async () => {
   }
   try {
     await playSelectedRange();
-  } catch (_error) {
+  } catch (error) {
+    if (!error.liveclipCurrentPlayFailure) return;
     await requestPreviewProxy(true);
   }
 });
@@ -366,6 +395,7 @@ elements.video.addEventListener("timeupdate", () => {
     currentMs >= state.endMs
   ) {
     state.rangePreviewActive = false;
+    state.activePlayRequestId = null;
     elements.video.pause();
   }
 });
